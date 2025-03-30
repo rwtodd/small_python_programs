@@ -1,0 +1,617 @@
+import random
+from enum import Enum, auto
+
+# --- Constants ---
+NUM_PILES = 4
+NUM_ROUNDS = 12
+INITIAL_POWER = 100
+POWER_DRAIN_COST = 5
+MAX_REACTIONS = 2
+
+POWER_DIE_FACES = [0, 0, 5, 5, 10, 10] # 0 represents blank
+
+TIMES = [
+    "12:00 AM", "12:30 AM", "1:00 AM", "1:30 AM", "2:00 AM", "2:30 AM",
+    "3:00 AM", "3:30 AM", "4:00 AM", "4:30 AM", "5:00 AM", "5:30 AM"
+]
+
+# --- Card Enum ---
+class CardType(Enum):
+    ANIMATRONIC = "Animatronic"
+    EMPTY_ROOM = "Empty Room"
+    POWER_DRAIN = "Power Drain"
+    WHAT_WAS_THAT_DOWN = "What Was That? Down Arrow"
+    WHAT_WAS_THAT_RIGHT = "What Was That? Right Arrow"
+    WHAT_WAS_THAT_DBL_RIGHT = "What Was That? Double Right Arrow"
+
+    # Helper for display name splitting
+    @property
+    def display_name(self):
+        if self.value.startswith("What Was That?"):
+            prefix = "What Was That?"
+            suffix = self.value[len(prefix):].strip()
+            return (prefix, suffix)
+        else:
+            return (self.value, "") # Return tuple for consistency
+
+    def __str__(self):
+        # Default string representation
+        return self.value
+
+INITIAL_COUNTS = {
+    CardType.ANIMATRONIC: 4,
+    CardType.EMPTY_ROOM: 8,
+    CardType.POWER_DRAIN: 9,
+    CardType.WHAT_WAS_THAT_DOWN: 9,
+    CardType.WHAT_WAS_THAT_RIGHT: 9,
+    CardType.WHAT_WAS_THAT_DBL_RIGHT: 9,
+}
+TOTAL_CARDS = sum(INITIAL_COUNTS.values())
+
+REACTABLE_CARDS = { # Use a set for faster lookups
+    CardType.ANIMATRONIC,
+    CardType.WHAT_WAS_THAT_DOWN,
+    CardType.WHAT_WAS_THAT_RIGHT,
+    CardType.WHAT_WAS_THAT_DBL_RIGHT,
+}
+
+# --- Event Types for Communication ---
+# Used for GameState to communicate back specific occurrences to UI/Controller
+# In the constants section near the top
+class ResolutionEvent(Enum):
+    REVEAL_CARD = auto()       # data = CardType (card revealed when moved past pile 4)
+    DRAW_REPLACEMENT = auto()  # data = CardType (card drawn by Down Arrow)
+    PILE_EMPTY = auto()        # data = pile_index (for Down/Right/DblRight)
+    LOSE_GAME = auto()         # data = reason_string
+    ANIMATRONIC_MOVED = auto() # data = (from_pile_idx, to_pile_idx)
+
+class GameState:
+    def __init__(self):
+        self.piles: list[list[CardType]] = [[] for _ in range(NUM_PILES)]
+        self.power: int = INITIAL_POWER
+        self.current_round: int = -1 # Will be incremented to 0 at the start
+        self.game_over: bool = False
+        self.win: bool = False
+        self._setup_game()
+
+    # --- Setup ---
+    def _setup_game(self):
+        """Initializes the deck and deals cards into piles."""
+        non_animatronic_cards = []
+        for card_type, count in INITIAL_COUNTS.items():
+            if card_type != CardType.ANIMATRONIC:
+                non_animatronic_cards.extend([card_type] * count)
+
+        random.shuffle(non_animatronic_cards)
+
+        pile_sizes = [10, 11, 11, 12]
+        start_index = 0
+        for i in range(NUM_PILES):
+            end_index = start_index + pile_sizes[i]
+            self.piles[i] = non_animatronic_cards[start_index:end_index]
+            start_index = end_index
+
+        animatronics = [CardType.ANIMATRONIC] * INITIAL_COUNTS[CardType.ANIMATRONIC]
+        self.piles[0].extend(animatronics[0:2])
+        self.piles[1].append(animatronics[2])
+        self.piles[2].append(animatronics[3])
+
+        random.shuffle(self.piles[0])
+        random.shuffle(self.piles[1])
+        random.shuffle(self.piles[2])
+
+    # --- State Info Getters ---
+    def get_pile_sizes(self) -> list[int]:
+        return [len(p) for p in self.piles]
+
+    def get_power(self) -> int:
+        return self.power
+
+    def get_current_time(self) -> str:
+         if 0 <= self.current_round < len(TIMES):
+             return TIMES[self.current_round]
+         elif self.current_round >= len(TIMES):
+              return "End of Game"
+         else:
+              return "Before Game Start"
+
+    def is_game_over(self) -> bool:
+        return self.game_over
+
+    def did_win(self) -> bool:
+        return self.win
+
+    # --- Round Progression ---
+    def advance_round(self):
+        self.current_round += 1
+        if self.current_round >= NUM_ROUNDS:
+             # Check win condition only if not already lost
+             if not self.game_over:
+                 self.win = True
+                 self.game_over = True
+
+    # --- Core Game Logic Methods ---
+    def consolidate_piles(self) -> bool:
+        """Moves cards upwards to fill empty slots. Returns True if changes were made."""
+        non_empty_piles = [pile for pile in self.piles if pile]
+        if len(non_empty_piles) == NUM_PILES or not non_empty_piles:
+            return False # No empty piles or all empty
+
+        new_piles = [[] for _ in range(NUM_PILES)]
+        target_pile_index = NUM_PILES - 1
+        for i in range(len(non_empty_piles) - 1, -1, -1):
+            if target_pile_index < 0: break
+            new_piles[target_pile_index] = non_empty_piles[i]
+            target_pile_index -= 1
+
+        if self.piles != new_piles:
+            self.piles = new_piles
+            return True
+        return False
+
+    def draw_cards_for_round(self) -> list[tuple[CardType, int]]:
+        """Draws cards according to Step 1 rules. Returns list of (card, original_pile_index)."""
+        drawn_this_round = []
+        for i in range(NUM_PILES):
+            if self.piles[i]:
+                while True: # Keep drawing if Animatronic revealed
+                    if not self.piles[i]:
+                        # Pile became empty during multi-draw
+                        break
+                    card = self.piles[i].pop(0) # Draw from the top
+                    drawn_this_round.append((card, i))
+                    if card != CardType.ANIMATRONIC:
+                        break # Stop drawing more from this pile
+        return drawn_this_round
+
+    def apply_reactions(self, reactions: list[tuple[CardType, int]]) -> None:
+        """Applies the effects of reacting to cards (shuffling back Animatronics)."""
+        for card, pile_idx in reactions:
+            if card == CardType.ANIMATRONIC:
+                # Shuffle back into the pile it came from
+                self.piles[pile_idx].append(card)
+                random.shuffle(self.piles[pile_idx])
+            # Other reactable cards are just discarded (handled by not being in remaining list)
+
+    @staticmethod
+    def roll_power_die() -> int:
+        """Rolls the power die."""
+        return random.choice(POWER_DIE_FACES)
+
+    def calculate_and_apply_power_cost(self, reactions: list[tuple[CardType, int]], original_drawn_cards: list[tuple[CardType, int]]) -> int:
+        """Calculates and deducts power cost for reactions and drains. Returns total cost."""
+        if not reactions:
+            return 0 # No cost if no reactions
+
+        cost = 0
+        # Cost from reactions
+        for _ in reactions: # Cost per reaction, not card type
+            cost += self.roll_power_die()
+
+        # Cost from Power Drain cards (only if reactions occurred)
+        power_drain_count = sum(1 for card, _ in original_drawn_cards if card == CardType.POWER_DRAIN)
+        cost += power_drain_count * POWER_DRAIN_COST
+
+        self.power -= cost
+        return cost
+
+    def _move_card_randomly_into_pile(self, card: CardType, target_pile_idx: int):
+        """Helper to move a card to a RANDOM spot in a target pile (for Animatronics)."""
+        # random.randint(a, b) includes both endpoints, so len() is correct for insertion index range
+        insert_pos = random.randint(0, len(self.piles[target_pile_idx]))
+        self.piles[target_pile_idx].insert(insert_pos, card)
+
+    def _move_card_to_top_of_pile(self, card: CardType, target_pile_idx: int):
+        """Helper to move a card to the TOP of a target pile (for Arrow moves)."""
+        self.piles[target_pile_idx].insert(0, card) # Insert at the beginning
+
+    def _lose_game(self, reason: str):
+        """Sets the game over state."""
+        self.game_over = True
+        self.win = False
+        # The reason string will be passed up via events
+
+    def resolve_remaining_cards(self, remaining_drawn_cards: list[tuple[CardType, int]]) -> list[tuple[ResolutionEvent, any]]:
+        """Resolves effects of remaining cards (Step 4), ordered Pile 4 -> 1.
+           Returns a list of events for the UI."""
+
+        events = []
+        if not remaining_drawn_cards:
+            return events
+
+        # Sort cards to process: Pile 4 (index 3) down to Pile 1 (index 0)
+        cards_to_process = sorted(remaining_drawn_cards, key=lambda item: item[1], reverse=True)
+
+        processed_indices_in_sorted = set() # Track indices within cards_to_process
+        
+        idx = 0
+        while idx < len(cards_to_process):
+            if idx in processed_indices_in_sorted:
+                idx += 1
+                continue
+
+            card, pile_idx = cards_to_process[idx]
+
+            # --- Resolve the card ---
+            if card == CardType.ANIMATRONIC:
+                next_pile_idx = pile_idx + 1
+                if next_pile_idx >= NUM_PILES:
+                    reason = f"Animatronic moved past Pile {NUM_PILES}!"
+                    self._lose_game(reason)
+                    events.append((ResolutionEvent.LOSE_GAME, reason))
+                    return events # Game Over, stop processing
+                else:
+                    self._move_card_randomly_into_pile(card, next_pile_idx)
+                    events.append((ResolutionEvent.ANIMATRONIC_MOVED, (pile_idx, next_pile_idx)))
+                    # Event: Animatronic moved (optional, not requested by user)
+                    # events.append((ResolutionEvent.ANIMATRONIC_MOVED, (pile_idx, next_pile_idx)))
+
+            elif card == CardType.WHAT_WAS_THAT_DOWN:
+                if not self.piles[pile_idx]:
+                    events.append((ResolutionEvent.PILE_EMPTY, pile_idx))
+                else:
+                    replacement_card = self.piles[pile_idx].pop(0)
+                    events.append((ResolutionEvent.DRAW_REPLACEMENT, replacement_card))
+                    # Resolve this new card *right now* by inserting it
+                    # We insert based on its original pile_idx, maintaining sort order logic
+                    # Find where to insert in the *remaining* unprocessed part of cards_to_process
+                    insert_at = idx + 1
+                    while insert_at < len(cards_to_process) and cards_to_process[insert_at][1] > pile_idx:
+                         insert_at += 1
+                    cards_to_process.insert(insert_at, (replacement_card, pile_idx))
+                    # Don't increment idx, next loop handles inserted/original card
+
+            elif card == CardType.WHAT_WAS_THAT_RIGHT:
+                if not self.piles[pile_idx]:
+                     events.append((ResolutionEvent.PILE_EMPTY, pile_idx))
+                else:
+                    moved_card = self.piles[pile_idx].pop(0)
+                    next_pile_idx = pile_idx + 1
+                    if next_pile_idx >= NUM_PILES:
+                        events.append((ResolutionEvent.REVEAL_CARD, moved_card))
+                        if moved_card == CardType.ANIMATRONIC:
+                             reason = f"Animatronic moved past Pile {NUM_PILES} via Right Arrow!"
+                             self._lose_game(reason)
+                             events.append((ResolutionEvent.LOSE_GAME, reason))
+                             return events # Game Over
+                    else:
+                        self._move_card_to_top_of_pile(moved_card, next_pile_idx)
+                        # Event: Card moved (optional, not requested by user)
+
+            elif card == CardType.WHAT_WAS_THAT_DBL_RIGHT:
+                 if not self.piles[pile_idx]:
+                     events.append((ResolutionEvent.PILE_EMPTY, pile_idx))
+                 else:
+                    moved_card = self.piles[pile_idx].pop(0)
+                    next_pile_idx = pile_idx + 2
+                    if next_pile_idx >= NUM_PILES:
+                        events.append((ResolutionEvent.REVEAL_CARD, moved_card))
+                        if moved_card == CardType.ANIMATRONIC:
+                            reason = f"Animatronic moved past Pile {NUM_PILES} via Double Right Arrow!"
+                            self._lose_game(reason)
+                            events.append((ResolutionEvent.LOSE_GAME, reason))
+                            return events # Game Over
+                    else:
+                        self._move_card_to_top_of_pile(moved_card, next_pile_idx)
+                        # Event: Card moved (optional, not requested by user)
+
+            elif card in [CardType.EMPTY_ROOM, CardType.POWER_DRAIN]:
+                # No effect, no event needed for discard unless debugging
+                pass
+
+            # Mark current card as processed *in the sorted list*
+            processed_indices_in_sorted.add(idx)
+            idx += 1 # Move to the next card in the sorted list
+
+        return events
+    
+class TextUI:
+    def __init__(self, state: GameState):
+        self.state = state
+
+    def display_message(self, message: str):
+        print(message)
+
+    def display_round_start(self):
+        print(f"\n\n\n\n\n===== Starting Round {self.state.current_round + 1}/{NUM_ROUNDS} ({self.state.get_current_time()}) =====\n\n")
+
+    def display_state(self, show_piles=True):
+        """Prints the current game state."""
+        print("-" * 30)
+        print(f"Time: {self.state.get_current_time()}")
+        print(f"Power: {self.state.get_power()}%")
+        if show_piles:
+            print("Pile sizes:", self.state.get_pile_sizes())
+        print("-" * 30)
+
+    def display_drawn_cards_formatted(self, drawn_cards: list[tuple[CardType, int]]) -> dict[int, int]:
+        """Displays drawn cards formatted for reaction. Returns map: display_num -> drawn_cards_idx."""
+        print("\n--- Cards Drawn This Round ---")
+        if not drawn_cards:
+            print("No cards were drawn.")
+            return {}
+
+        cards_by_pile = {i: [] for i in range(NUM_PILES)}
+        display_num_to_drawn_idx = {}
+        current_display_num = 1
+
+        for idx, (card, pile_idx) in enumerate(drawn_cards):
+            # Ensure pile_idx is valid before appending
+            if 0 <= pile_idx < NUM_PILES:
+                cards_by_pile.setdefault(pile_idx, []).append((card, current_display_num))
+                display_num_to_drawn_idx[current_display_num] = idx
+                current_display_num += 1
+            else:
+                print(f"Warning: Invalid pile index {pile_idx} encountered for card {card}")
+
+
+        col_width = 27 # Adjusted for potentially longer names
+        max_cards_in_pile = 0
+        for pile_idx in range(NUM_PILES):
+             pile_content = cards_by_pile.get(pile_idx, [])
+             max_cards_in_pile = max(max_cards_in_pile, len(pile_content))
+
+        # --- Print Header ---
+        header_line = "".join(f"Pile {i + 1}".ljust(col_width) for i in range(NUM_PILES))
+        separator_line = "".join(
+            ("-" * (len(f"Pile {i + 1}") if cards_by_pile.get(i) else 5)).ljust(col_width)
+            for i in range(NUM_PILES)
+        )
+        print(header_line)
+        print(separator_line)
+
+        # --- Print Card Rows ---
+        for card_row_idx in range(max_cards_in_pile):
+            line1 = "" # For card number and first part of name
+            line2 = "" # For second part of long names
+            needs_line2 = False
+
+            for pile_idx in range(NUM_PILES):
+                pile_content = cards_by_pile.get(pile_idx, [])
+                if card_row_idx < len(pile_content):
+                    card, display_num = pile_content[card_row_idx]
+                    name_part1, name_part2 = card.display_name # Use the property
+
+                    card_text_line1 = f"({display_num}) {name_part1}"
+                    card_text_line2 = f"    {name_part2}" if name_part2 else ""
+
+                    line1 += card_text_line1.ljust(col_width)
+                    line2 += card_text_line2.ljust(col_width)
+                    if name_part2:
+                        needs_line2 = True
+                else:
+                    line1 += "".ljust(col_width)
+                    line2 += "".ljust(col_width)
+
+            print(line1)
+            if needs_line2:
+                print(line2)
+
+            # Add spacer (except last row)
+            if card_row_idx < max_cards_in_pile - 1:
+                 spacer_needed = any(card_row_idx + 1 < len(cards_by_pile.get(p, [])) for p in range(NUM_PILES))
+                 if spacer_needed:
+                      print() # Just an empty line
+
+        print("-" * (col_width * NUM_PILES))
+        return display_num_to_drawn_idx
+
+    def get_player_reactions(self, drawn_cards: list[tuple[CardType, int]]) -> list[tuple[CardType, int]]:
+        """Gets player reaction choices. Returns list of (card, pile_idx) for chosen reactions."""
+        display_num_map = self.display_drawn_cards_formatted(drawn_cards)
+        if not display_num_map:
+            return [] # No cards drawn or displayed
+
+        if self.state.get_power() <= 0:
+            print("\nPower is 0% or less. Cannot react.")
+            return []
+
+        chosen_reactions_data = [] # List of (card, pile_idx)
+        reacted_display_nums = set()
+
+        while len(chosen_reactions_data) < MAX_REACTIONS:
+            remaining_choices = MAX_REACTIONS - len(chosen_reactions_data)
+            prompt = (f"Choose card number(s) to react to (1-{len(display_num_map)}), "
+                      f"up to {remaining_choices} total. Enter 0 to finish: ")
+
+            try:
+                input_str = input(prompt).strip()
+                if not input_str: continue
+
+                choices_str = input_str.split()
+
+                if '0' in choices_str and len(choices_str) > 1:
+                    print("Invalid input: Cannot mix 0 with other numbers.")
+                    continue
+                if '0' in choices_str or input_str == '0':
+                    break # Player chose to finish
+
+                current_selection_display_nums = set()
+                current_selection_data = [] # Store (card, pile_idx) for valid choices this turn
+                valid_input_this_turn = True
+
+                if len(choices_str) + len(chosen_reactions_data) > MAX_REACTIONS:
+                    print(f"Invalid input: Cannot choose {len(choices_str)} card(s), only {remaining_choices} reaction(s) left.")
+                    continue
+
+                for choice_str in choices_str:
+                    display_num = int(choice_str)
+
+                    if not (1 <= display_num <= len(display_num_map)):
+                        print(f"Invalid input: '{display_num}' is not a valid card number.")
+                        valid_input_this_turn = False; break
+                    if display_num in reacted_display_nums:
+                        print(f"Invalid input: Already chose card {display_num}.")
+                        valid_input_this_turn = False; break
+                    if display_num in current_selection_display_nums:
+                        print(f"Invalid input: Cannot choose {display_num} twice.")
+                        valid_input_this_turn = False; break
+
+                    drawn_idx = display_num_map[display_num]
+                    card, pile_idx = drawn_cards[drawn_idx]
+
+                    if card not in REACTABLE_CARDS:
+                        print(f"Invalid input: Card {display_num} ('{card}') cannot be reacted to.")
+                        valid_input_this_turn = False; break
+
+                    current_selection_display_nums.add(display_num)
+                    current_selection_data.append((card, pile_idx))
+
+                if not valid_input_this_turn: continue
+
+                # Process valid selections
+                for card_data in current_selection_data:
+                     # Add to final list
+                     chosen_reactions_data.append(card_data)
+                     # Find the display num associated with this choice (inefficient but works)
+                     d_num = next(dn for dn, drw_idx in display_num_map.items() if drawn_cards[drw_idx] == card_data)
+                     reacted_display_nums.add(d_num)
+
+                if len(chosen_reactions_data) >= MAX_REACTIONS: break
+
+            except ValueError: print("Invalid input. Enter numbers separated by spaces, or 0.")
+            except KeyError: print("Internal Error: Display number mapping failed.")
+            except StopIteration: print("Internal Error: Could not find display number for selection.")
+
+
+        if chosen_reactions_data:
+             print("\nProcessing reactions...")
+             # Confirmation messages moved to controller/apply_reactions if needed
+
+        return chosen_reactions_data # Return list of (CardType, pile_idx)
+
+    def display_power_cost(self, cost: int):
+        if cost > 0:
+            print(f"\n--- Power Cost Assessment ---")
+            print(f"Power cost this round: {cost}")
+            print(f"Power level updated: {self.state.get_power()}%")
+            if self.state.get_power() <= 0:
+                 print("WARNING: Power depleted!")
+        else:
+             print("\nNo reactions chosen or no cost incurred.")
+
+
+    def display_resolution_events(self, events: list[tuple[ResolutionEvent, any]]):
+        if not events: return
+        print("\n--- Resolution Events ---")
+        for event_type, data in events:
+            if event_type == ResolutionEvent.REVEAL_CARD:
+                print(f"  Card moved past Pile 4 and discarded: {data}")
+            elif event_type == ResolutionEvent.DRAW_REPLACEMENT:
+                print(f"  Down Arrow drew replacement card: {data}")
+            elif event_type == ResolutionEvent.PILE_EMPTY:
+                print(f"  Attempted to draw/move from empty Pile {data + 1}.")
+            elif event_type == ResolutionEvent.ANIMATRONIC_MOVED:
+                 from_pile_idx, to_pile_idx = data
+                 print(f"  Animatronic moved from Pile {from_pile_idx + 1} to Pile {to_pile_idx + 1} (shuffled in).")
+            elif event_type == ResolutionEvent.LOSE_GAME:
+                print(f"  !!! GAME OVER: {data}")
+            # Add more event displays if needed
+
+    def display_game_over(self):
+        print("\n" + "=" * 30)
+        if self.state.did_win():
+            print("  YOU SURVIVED THE NIGHT - YOU WIN!")
+        else:
+            # Loss reason printed during resolution events
+            print("          GAME OVER - YOU LOST!")
+        print("=" * 30)
+
+    def prompt_next_round(self):
+        input("\nPress Enter to continue to the next round...")
+
+class GameController:
+    def __init__(self):
+        self.state = GameState()
+        self.ui = TextUI(self.state)
+
+    def play_game(self):
+        """Runs the main game loop."""
+        self.ui.display_message("Starting the Five Nights at Freddy's Game...")
+        self.ui.display_state() # Initial state
+
+        while not self.state.is_game_over():
+            # --- Start Round ---
+            self.state.advance_round()
+            if self.state.is_game_over(): # Check if advancing round triggered win condition
+                break
+            self.ui.display_round_start()
+
+            # --- Step 0: Update State ---
+            if self.state.consolidate_piles():
+                 self.ui.display_message("Piles consolidated upwards.")
+            self.ui.display_state(show_piles=True) # Show state even if no consolidation
+
+
+            # --- Step 1: Draw Cards (Logic Only) ---
+            # UI Change: No print during draw itself
+            drawn_cards = self.state.draw_cards_for_round()
+
+            # If all piles are empty, drawing yields nothing, proceed to next round check
+            if not drawn_cards and all(size == 0 for size in self.state.get_pile_sizes()):
+                 self.ui.display_message("\nAll piles are empty.")
+                 # Game continues until time runs out or loss condition
+                 self.ui.prompt_next_round()
+                 continue
+
+            # --- Step 2: Player Reaction (UI Interaction) ---
+            # UI displays cards here
+            reactions = self.ui.get_player_reactions(drawn_cards) # Returns list of (CardType, pile_idx)
+
+            # Apply reaction effects (State change)
+            self.state.apply_reactions(reactions) # Handles shuffling Animatronics
+
+
+            # --- Step 3: Assess Power Cost (Calculation and State Change) ---
+            cost = self.state.calculate_and_apply_power_cost(reactions, drawn_cards)
+            self.ui.display_power_cost(cost) # Display results
+
+
+            # --- Step 4: Resolve Remaining Cards ---
+            # Let's rebuild remaining_cards properly from original drawn_cards
+            remaining_drawn_cards = []
+            temp_drawn = list(drawn_cards) # Copy to modify
+
+            # Remove reacted cards (only need to handle animatronics shuffled back)
+            # Non-animatronic reacted cards are just 'discarded' by not being in remaining list
+            animatronics_shuffled_back = 0
+            for i in range(len(temp_drawn)):
+                 card, pile_idx = temp_drawn[i]
+                 # Check if this specific instance was reacted to
+                 reaction_match = (card, pile_idx)
+                 if reaction_match in reactions:
+                     # Mark for removal or note if animatronic
+                     if card == CardType.ANIMATRONIC:
+                          # This was shuffled back, don't add to remaining AND remove from reactions list to avoid double count
+                          reactions.remove(reaction_match) # Consume one reaction match
+                          animatronics_shuffled_back += 1
+                     else:
+                          # Arrow reacted to - discard implicitly by not adding to remaining
+                           reactions.remove(reaction_match) # Consume one reaction match
+                     # Don't add this card to remaining_drawn_cards
+                 else:
+                     remaining_drawn_cards.append(temp_drawn[i])
+
+
+            # Resolve the cards that were not reacted to (State change + get events)
+            resolution_events = self.state.resolve_remaining_cards(remaining_drawn_cards)
+
+            # Display resolution events (UI Update)
+            self.ui.display_resolution_events(resolution_events)
+
+
+            # --- Check Game Over ---
+            if self.state.is_game_over():
+                break # Exit loop immediately if loss occurred during resolution
+
+            # --- End of Round ---
+            self.ui.prompt_next_round()
+
+
+        # --- Game End ---
+        self.ui.display_game_over()
+
+# --- Main Execution ---
+if __name__ == "__main__":
+    controller = GameController()
+    controller.play_game()
