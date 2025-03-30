@@ -1,0 +1,58 @@
+We are going to model a solitaire board game.  In this game, there are 6 types of cards:
+   - "Animatronic" (4 of them)
+   - "Empty Room" (8 of them)
+   - "Power Drain" (9 of them)
+   - "What Was That?" Down Arrow (9 of them)
+   - "What Was That?" Right Arrow (9 of them)
+   - "What Was That?" Double Right Arrow (9 of them)
+
+There are a total of 48 cards.  At the start of the game, you take out the Animatronic cards and shuffle the
+rest of them.  These are divided into 4 piles like this:
+
+  - Pile 1: 10 cards + 2 animatronic cards (shuffled into the pile)
+  - Pile 2: 11 cards + 1 animatronic card (shuffled into the pile)
+  - Pile 3: 11 cards + 1 animatronic card (shuffled into the pile)
+  - Pile 4: 12 cards
+
+There are 12 rounds, labeled as half-hours from midnight to 5:30am (so:  12:00, 12:30, 1:00, 1:30, etc).
+
+The player has a power meter that starts at 100%.
+
+There is a 6-sided die called a "power die", with 2 blank sides, 2 sides labelled 5, and 2 sides labelled 10
+
+In each round, the following occurs:
+
+Step 0: Update the state of the game.  If this is not the first round, the time advances (e.g., from 12:00 to 12:30, and so on.)
+Also, if any of the piles have become empty, the cards from the next-lowest-numbered pile are moved into the empty slots.  So, the
+highest-numbered piles will always have cards if any are left.
+
+Step 1: Draw a card from every pile that still has cards.  Special case: if the card drawn is animatronic, draw additional cards from that
+pile until either the last card drawn is _not_ animatronic, or you run out of cards in the pile.  Keep track of which pile all drawn cards
+are from, as it will matter in the following ssteps.
+
+Step 2: If the player's power level is 0% or below, skip to Step 4.  Otherwise: ask the player to pick from 0 to 2 of the 
+drawn cards he wants to "react to".  Here are the result of "reacting to" a card:
+   - "Animatronic": the card is shuffled back into the pile it came from 
+   - "What Was That?" Down Arrow: the card is discarded 
+   - "What Was That?" Right Arrow: the card is discarded
+   - "What Was That?" Double Right Arrow: the card is discarded
+The following cards cannot be reacted to:
+   - "Empty Room"
+   - "Power Drain"
+
+Step 3: Assess a power cost of the reactions from step 2.  For each reaction, roll the "power die" and deduct the amount from 
+the players power meter.  Also, for every "Power Drain" card that was drawn, subtract another 5 from the player's power meter. 
+Note: if the player does not react to any cards this round, then power drain cards do not have an effect.
+
+Step 4: Resolve any remaining drawn cards:
+    - "Animatronic": place the "Animatronic" card into a random position in the next pile (for example, if it was drawn from pile 1, it moves to a random spot in pile 2).  If it was already in pile 4, then the player loses the game!
+    - "What Was That?" Down Arrow: Another card is drawn from the same pile (assuming there is a card left in the pile to draw), and cannot be reacted to.  It is immediately resolved per these rules in Step 4 (this step). Then, this card is discarded.
+    - "What Was That?" Right Arrow: A card is moved from the same pile, and moved over to the next pile (e.g., from pile 1 to pile 2). The moved card is not shown to the player. Then this card is discarded.  Special case: if the card is moved past Pile 4, it is shown to the player and discarded.  If the card was an Animatronic card, the player loses!
+    - "What Was That?" Double Right Arrow: A card is moved from the same pile, and moved over two piles (e.g., from pile 1 to pile 3). The moved card is not shown to the player. Then this card is discarded. Special case: if the card is moved past Pile 4, it is shown to the player and discarded.  If the card was an Animatronic card, the player loses!
+   - "Empty Room": No effect, it is discarded
+   - "Power Drain": No effect, it is discarded.
+
+Step 5: Ways to Lose or Win
+ - Ways to Lose: If an Animatronic card is moved past pile 4 (see the ways this can happen in Step 4)
+ - Ways to Win: You reach the end of 5:30 round without Losing.
+
