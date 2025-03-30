@@ -40,11 +40,11 @@ class CardType(Enum):
 
 INITIAL_COUNTS = {
     CardType.ANIMATRONIC: 4,
-    CardType.EMPTY_ROOM: 8,
-    CardType.POWER_DRAIN: 9,
-    CardType.WHAT_WAS_THAT_DOWN: 9,
-    CardType.WHAT_WAS_THAT_RIGHT: 9,
-    CardType.WHAT_WAS_THAT_DBL_RIGHT: 9,
+    CardType.EMPTY_ROOM: 11,
+    CardType.POWER_DRAIN: 7,
+    CardType.WHAT_WAS_THAT_DOWN: 7,
+    CardType.WHAT_WAS_THAT_RIGHT: 12,
+    CardType.WHAT_WAS_THAT_DBL_RIGHT: 7,
 }
 TOTAL_CARDS = sum(INITIAL_COUNTS.values())
 

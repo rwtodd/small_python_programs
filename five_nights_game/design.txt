@@ -1,10 +1,10 @@
 We are going to model a solitaire board game.  In this game, there are 6 types of cards:
    - "Animatronic" (4 of them)
-   - "Empty Room" (8 of them)
-   - "Power Drain" (9 of them)
-   - "What Was That?" Down Arrow (9 of them)
-   - "What Was That?" Right Arrow (9 of them)
-   - "What Was That?" Double Right Arrow (9 of them)
+   - "Empty Room" (11 of them)
+   - "Power Drain" (7 of them)
+   - "What Was That?" Down Arrow (7 of them)
+   - "What Was That?" Right Arrow (12 of them)
+   - "What Was That?" Double Right Arrow (7 of them)
 
 There are a total of 48 cards.  At the start of the game, you take out the Animatronic cards and shuffle the
 rest of them.  These are divided into 4 piles like this:
