@@ -1,0 +1,67 @@
+#!/usr/bin/env python3
+
+from pathlib import Path
+import argparse
+
+def generate_scripts(fname: str, venv: str = 'cli') -> tuple[str, str]:
+    """
+    Generate contents for .bat and .ps1 runner scripts for a target script.
+
+    Args:
+        fname (str): The path to the target script
+        venv (str): The name of the virtual environment (default: 'cli')
+
+    Returns:
+        tuple[str, str]: Contents of the .bat and .ps1 files
+    """
+    # Convert to Path object and resolve to absolute path
+    target_script = Path(fname).resolve()
+    
+    # Get the filename with extension
+    target_base = target_script.name
+    
+    # Generate script contents
+    bat_content = (
+        '@echo off\n'
+        f'"D:\\venv\\{venv}\\Scripts\\python.exe" "%~dp0{target_base}" %*\n'
+    )
+    ps1_content = (
+        f'& "D:\\venv\\{venv}\\Scripts\\python.exe" '
+        f'(Join-Path $PSScriptRoot "{target_base}") $args\n'
+    )
+    
+    return bat_content, ps1_content
+
+if __name__ == '__main__':
+    # Set up command-line argument parsing
+    parser = argparse.ArgumentParser(description='Generate .bat and .ps1 runners for a script')
+    parser.add_argument('target_script', help='The script to run')
+    parser.add_argument('--venv', default='cli', help='The name of the virtual environment')
+    args = parser.parse_args()
+
+    # Convert target script to Path object and resolve
+    target_script = Path(args.target_script).resolve()
+    
+    # Verify the target script exists
+    if not target_script.exists():
+        print(f"Error: Target script '{target_script}' does not exist.")
+        exit(1)
+
+    # Get script name without extension for file naming
+    script_name = target_script.stem
+    
+    # Define output file paths
+    bat_file = target_script.parent / f"{script_name}.bat"
+    ps1_file = target_script.parent / f"{script_name}.ps1"
+    
+    # Generate script contents
+    bat_content, ps1_content = generate_scripts(str(target_script), args.venv)
+    
+    # Write contents to files
+    bat_file.write_text(bat_content)
+    ps1_file.write_text(ps1_content)
+    
+    # Confirm creation to user
+    print(f"Generated {bat_file}")
+    print(f"Generated {ps1_file}")
+
