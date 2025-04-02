@@ -65,6 +65,7 @@ class ResolutionEvent(Enum):
     PILE_EMPTY = auto()        # data = pile_index (for Down/Right/DblRight)
     LOSE_GAME = auto()         # data = reason_string
     ANIMATRONIC_MOVED = auto() # data = (from_pile_idx, to_pile_idx)
+    ANIMATRONIC_RESHUFFLED = auto() # data = pile_index
 
 class GameState:
     def __init__(self):
@@ -165,14 +166,17 @@ class GameState:
                         break # Stop drawing more from this pile
         return drawn_this_round
 
-    def apply_reactions(self, reactions: list[tuple[CardType, int]]) -> None:
+    def apply_reactions(self, reactions: list[tuple[CardType, int]]) -> list[tuple[ResolutionEvent, any]]:
         """Applies the effects of reacting to cards (shuffling back Animatronics)."""
+        events = []
         for card, pile_idx in reactions:
             if card == CardType.ANIMATRONIC:
                 # Shuffle back into the pile it came from
+                events.append( (ResolutionEvent.ANIMATRONIC_RESHUFFLED, pile_idx) )
                 self.piles[pile_idx].append(card)
                 random.shuffle(self.piles[pile_idx])
             # Other reactable cards are just discarded (handled by not being in remaining list)
+        return events
 
     @staticmethod
     def roll_power_die() -> int:
@@ -397,9 +401,11 @@ class TextUI:
         print("-" * (col_width * NUM_PILES))
         return display_num_to_drawn_idx
 
-    def get_player_reactions(self, drawn_cards: list[tuple[CardType, int]]) -> list[tuple[CardType, int]]:
-        """Gets player reaction choices. Returns list of (card, pile_idx) for chosen reactions."""
+    def get_player_reactions(self, drawn_cards: list[tuple[CardType, int]]) -> tuple[ list[tuple[CardType, int]], list[tuple[CardType,int]] ]:
+        """Gets player reaction choices. Returns list of (card, pile_idx) for chosen reactions, and for remaining cards."""
         display_num_map = self.display_drawn_cards_formatted(drawn_cards)
+        unchosen_cards = drawn_cards[:] # copy
+
         if not display_num_map:
             return [] # No cards drawn or displayed
 
@@ -460,37 +466,26 @@ class TextUI:
 
                 if not valid_input_this_turn: continue
 
-                # Process valid selections
-                for card_data in current_selection_data:
-                     # Add to final list
-                     chosen_reactions_data.append(card_data)
-                     # Find the display num associated with this choice (inefficient but works)
-                     d_num = next(dn for dn, drw_idx in display_num_map.items() if drawn_cards[drw_idx] == card_data)
-                     reacted_display_nums.add(d_num)
-
+                chosen_reactions_data.extend(current_selection_data)
+                for idx in current_selection_display_nums:
+                    reacted_display_nums.add(idx)
+                    unchosen_cards[ display_num_map[idx] ] = None  # 'zero' it out...
+                
                 if len(chosen_reactions_data) >= MAX_REACTIONS: break
 
             except ValueError: print("Invalid input. Enter numbers separated by spaces, or 0.")
             except KeyError: print("Internal Error: Display number mapping failed.")
             except StopIteration: print("Internal Error: Could not find display number for selection.")
 
+        return (chosen_reactions_data, [uc for uc in unchosen_cards if uc is not None]) # Return 2 lists of (CardType, pile_idx)
 
-        if chosen_reactions_data:
-             print("\nProcessing reactions...")
-             # Confirmation messages moved to controller/apply_reactions if needed
-
-        return chosen_reactions_data # Return list of (CardType, pile_idx)
-
-    def display_power_cost(self, cost: int):
+    def display_power_cost(self, cost: int) -> None:
+        print(f"\n--- Power Cost Assessment ---")
+        print(f"Power cost this round: {cost}")
         if cost > 0:
-            print(f"\n--- Power Cost Assessment ---")
-            print(f"Power cost this round: {cost}")
             print(f"Power level updated: {self.state.get_power()}%")
             if self.state.get_power() <= 0:
                  print("WARNING: Power depleted!")
-        else:
-             print("\nNo reactions chosen or no cost incurred.")
-
 
     def display_resolution_events(self, events: list[tuple[ResolutionEvent, any]]):
         if not events: return
@@ -505,6 +500,9 @@ class TextUI:
             elif event_type == ResolutionEvent.ANIMATRONIC_MOVED:
                  from_pile_idx, to_pile_idx = data
                  print(f"  Animatronic moved from Pile {from_pile_idx + 1} to Pile {to_pile_idx + 1} (shuffled in).")
+            elif event_type == ResolutionEvent.ANIMATRONIC_RESHUFFLED:
+                 pile_idx = data
+                 print(f"  Animatronic re-shuffled into Pile {pile_idx + 1}.")
             elif event_type == ResolutionEvent.LOSE_GAME:
                 print(f"  !!! GAME OVER: {data}")
             # Add more event displays if needed
@@ -543,7 +541,6 @@ class GameController:
                  self.ui.display_message("Piles consolidated upwards.")
             self.ui.display_state(show_piles=True) # Show state even if no consolidation
 
-
             # --- Step 1: Draw Cards (Logic Only) ---
             # UI Change: No print during draw itself
             drawn_cards = self.state.draw_cards_for_round()
@@ -557,49 +554,18 @@ class GameController:
 
             # --- Step 2: Player Reaction (UI Interaction) ---
             # UI displays cards here
-            reactions = self.ui.get_player_reactions(drawn_cards) # Returns list of (CardType, pile_idx)
-
-            # Apply reaction effects (State change)
-            self.state.apply_reactions(reactions) # Handles shuffling Animatronics
-
+            reactions, remaining_drawn_cards = self.ui.get_player_reactions(drawn_cards) # Returns 2 lists of (CardType, pile_idx)
 
             # --- Step 3: Assess Power Cost (Calculation and State Change) ---
             cost = self.state.calculate_and_apply_power_cost(reactions, drawn_cards)
             self.ui.display_power_cost(cost) # Display results
 
-
-            # --- Step 4: Resolve Remaining Cards ---
-            # Let's rebuild remaining_cards properly from original drawn_cards
-            remaining_drawn_cards = []
-            temp_drawn = list(drawn_cards) # Copy to modify
-
-            # Remove reacted cards (only need to handle animatronics shuffled back)
-            # Non-animatronic reacted cards are just 'discarded' by not being in remaining list
-            animatronics_shuffled_back = 0
-            for i in range(len(temp_drawn)):
-                 card, pile_idx = temp_drawn[i]
-                 # Check if this specific instance was reacted to
-                 reaction_match = (card, pile_idx)
-                 if reaction_match in reactions:
-                     # Mark for removal or note if animatronic
-                     if card == CardType.ANIMATRONIC:
-                          # This was shuffled back, don't add to remaining AND remove from reactions list to avoid double count
-                          reactions.remove(reaction_match) # Consume one reaction match
-                          animatronics_shuffled_back += 1
-                     else:
-                          # Arrow reacted to - discard implicitly by not adding to remaining
-                           reactions.remove(reaction_match) # Consume one reaction match
-                     # Don't add this card to remaining_drawn_cards
-                 else:
-                     remaining_drawn_cards.append(temp_drawn[i])
-
-
             # Resolve the cards that were not reacted to (State change + get events)
             resolution_events = self.state.resolve_remaining_cards(remaining_drawn_cards)
+            resolution_events.extend(self.state.apply_reactions(reactions))
 
             # Display resolution events (UI Update)
             self.ui.display_resolution_events(resolution_events)
-
 
             # --- Check Game Over ---
             if self.state.is_game_over():
@@ -607,7 +573,6 @@ class GameController:
 
             # --- End of Round ---
             self.ui.prompt_next_round()
-
 
         # --- Game End ---
         self.ui.display_game_over()
