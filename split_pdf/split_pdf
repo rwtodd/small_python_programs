@@ -1,0 +1,89 @@
+#!/usr/bin/env python3
+
+import sys
+from pathlib import Path
+from pypdf import PdfReader, PdfWriter
+
+def split_pdf(input_file: str, split_points: list[int] = None):
+    """
+    Splits the input PDF into multiple PDFs based on the provided split points.
+    If no split points are provided, splits every 10 pages.
+
+    Args:
+        input_file (str): Path to the input PDF file.
+        split_points (list[int], optional): List of page numbers where splits should occur.
+
+    Raises:
+        FileNotFoundError: If the input file is not found.
+        ValueError: If there is an error reading the PDF or if split points are invalid.
+    """
+    # Convert the input file string to a Path object
+    input_path = Path(input_file)
+    
+    # Check if the input file exists
+    if not input_path.exists():
+        raise FileNotFoundError(f"Input file '{input_path}' not found.")
+
+    # Read the input PDF
+    try:
+        input_pdf = PdfReader(input_path)
+        total_pages = len(input_pdf.pages)
+    except Exception as e:
+        raise ValueError(f"Error reading PDF file '{input_path}': {e}")
+
+    # Determine split points
+    if split_points is None:
+        # Default to splitting every 10 pages
+        split_points = list(range(11, total_pages + 1, 10))
+    else:
+        # Validate provided split points
+        if not all(2 <= p <= total_pages for p in split_points):
+            raise ValueError(f"Split points must be between 2 and {total_pages}.")
+        if not all(split_points[i] < split_points[i + 1] for i in range(len(split_points) - 1)):
+            raise ValueError("Split points must be in increasing order.")
+
+    # Define start and end pages for each output PDF
+    start_pages = [1] + split_points
+    end_pages = [p - 1 for p in split_points] + [total_pages]
+
+    # Create each output PDF
+    for i in range(len(start_pages)):
+        output_pdf = PdfWriter()
+        for page_num in range(start_pages[i] - 1, end_pages[i]):
+            output_pdf.add_page(input_pdf.pages[page_num])
+
+        # Construct the output file path using pathlib
+        output_file = input_path.parent / f"{input_path.stem}_{i:03d}.pdf"
+        with open(output_file, 'wb') as f:
+            output_pdf.write(f)
+        print(f"Created '{output_file}' with pages {start_pages[i]} to {end_pages[i]}")
+
+if __name__ == "__main__":
+    import argparse
+
+    # Set up command-line argument parser
+    parser = argparse.ArgumentParser(description="Split a PDF into multiple files.")
+    parser.add_argument("input_file", help="Path to the input PDF file")
+    parser.add_argument('-s',
+        "--split_points",
+        help="Comma-separated list of page numbers where splits should occur",
+        default=None
+    )
+    args = parser.parse_args()
+
+    # Parse split points if provided
+    if args.split_points:
+        try:
+            split_points = [int(p) for p in args.split_points.split(",")]
+        except ValueError:
+            print("Error: Split points must be integers separated by commas.")
+            sys.exit(1)
+    else:
+        split_points = None
+
+    # Call the split_pdf function
+    try:
+        split_pdf(args.input_file, split_points)
+    except Exception as e:
+        print(f"Error: {e}")
+        sys.exit(1)
