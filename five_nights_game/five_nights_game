@@ -407,11 +407,11 @@ class TextUI:
         unchosen_cards = drawn_cards[:] # copy
 
         if not display_num_map:
-            return [] # No cards drawn or displayed
+            return ([],unchosen_cards) # No cards drawn or displayed
 
         if self.state.get_power() <= 0:
             print("\nPower is 0% or less. Cannot react.")
-            return []
+            return ([],unchosen_cards)
 
         chosen_reactions_data = [] # List of (card, pile_idx)
         reacted_display_nums = set()
