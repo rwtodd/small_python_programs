@@ -4,59 +4,46 @@ import sys
 from pathlib import Path
 from pypdf import PdfReader, PdfWriter
 
-def split_pdf(input_file: str, split_points: list[int] = None):
+def split_pdf(input_pdf_path: str, split_page_numbers: list[int] = None) -> None:
     """
-    Splits the input PDF into multiple PDFs based on the provided split points.
-    If no split points are provided, splits every 10 pages.
-
-    Args:
-        input_file (str): Path to the input PDF file.
-        split_points (list[int], optional): List of page numbers where splits should occur.
-
-    Raises:
-        FileNotFoundError: If the input file is not found.
-        ValueError: If there is an error reading the PDF or if split points are invalid.
-    """
-    # Convert the input file string to a Path object
-    input_path = Path(input_file)
+    Splits a PDF into multiple parts based on the provided list of page numbers.
     
+    :param input_pdf_path: Path to the input PDF file.
+    :param split_page_numbers: List of page numbers where the PDF should be split. If none, every 10 pages is split.
+    """
+    input_path = Path(input_pdf_path)
     # Check if the input file exists
     if not input_path.exists():
         raise FileNotFoundError(f"Input file '{input_path}' not found.")
 
-    # Read the input PDF
-    try:
-        input_pdf = PdfReader(input_path)
-        total_pages = len(input_pdf.pages)
-    except Exception as e:
-        raise ValueError(f"Error reading PDF file '{input_path}': {e}")
+    base_name = input_path.stem
+    ext = input_path.suffix
+    
+    with input_path.open('rb') as input_pdf_file:
+        reader = PdfReader(input_pdf_file)
+        num_pages = len(reader.pages)
+        
+        start_page = 1
+        part_number = 1
+        
+        if split_page_numbers is None:
+            split_page_numbers = list(range(11, num_pages + 1, 10))
 
-    # Determine split points
-    if split_points is None:
-        # Default to splitting every 10 pages
-        split_points = list(range(11, total_pages + 1, 10))
-    else:
-        # Validate provided split points
-        if not all(2 <= p <= total_pages for p in split_points):
-            raise ValueError(f"Split points must be between 2 and {total_pages}.")
-        if not all(split_points[i] < split_points[i + 1] for i in range(len(split_points) - 1)):
-            raise ValueError("Split points must be in increasing order.")
+        split_page_numbers = split_page_numbers + [num_pages + 1]
+        for end_page in split_page_numbers:            
+            output_path = input_path.with_name(f"{base_name}_{part_number:03d}{ext}")
+            
+            writer = PdfWriter()
+            for page_num in range(start_page - 1, end_page - 1):
+                writer.add_page(reader.pages[page_num])
+            
+            with output_path.open('wb') as output_pdf_file:
+                writer.write(output_pdf_file)
+                print(f"Created '{output_path}' with pages {start_page} to {end_page - 1}")
 
-    # Define start and end pages for each output PDF
-    start_pages = [1] + split_points
-    end_pages = [p - 1 for p in split_points] + [total_pages]
+            start_page = end_page
+            part_number += 1
 
-    # Create each output PDF
-    for i in range(len(start_pages)):
-        output_pdf = PdfWriter()
-        for page_num in range(start_pages[i] - 1, end_pages[i]):
-            output_pdf.add_page(input_pdf.pages[page_num])
-
-        # Construct the output file path using pathlib
-        output_file = input_path.parent / f"{input_path.stem}_{i:03d}.pdf"
-        with open(output_file, 'wb') as f:
-            output_pdf.write(f)
-        print(f"Created '{output_file}' with pages {start_pages[i]} to {end_pages[i]}")
 
 if __name__ == "__main__":
     import argparse
@@ -74,7 +61,9 @@ if __name__ == "__main__":
     # Parse split points if provided
     if args.split_points:
         try:
-            split_points = [int(p) for p in args.split_points.split(",")]
+            split_points = list(sorted(int(p) for p in args.split_points.split(",") if p != '1'))            
+            if len(split_points) == 0:
+                split_points = None
         except ValueError:
             print("Error: Split points must be integers separated by commas.")
             sys.exit(1)
