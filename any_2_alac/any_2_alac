@@ -1,0 +1,156 @@
+#!/usr/bin/env python3
+
+import glob
+import subprocess
+import argparse
+import mutagen
+from mutagen.mp4 import MP4
+from pathlib import Path
+
+def main():
+    # Parse command-line arguments
+    parser = argparse.ArgumentParser(description="Convert music files to Apple Lossless format.")
+    parser.add_argument('--append-quote', action='store_true', help="Append a single quote to the album name in metadata")
+    args = parser.parse_args()
+
+    # Define supported music file extensions
+    music_extensions = ['*.ogg', '*.flac', '*.mp3', '*.m4a', '*.aac', '*.opus']
+    music_files = []
+    for ext in music_extensions:
+        music_files.extend(Path('.').glob(ext))
+
+    # Create output directory if it doesn't exist
+    out_dir = Path('out')
+    out_dir.mkdir(exist_ok=True)
+
+    # Process each music file
+    for infile in music_files:
+        base_name = infile.stem
+        flac_file = out_dir / f"{base_name}.flac"
+        caf_file = out_dir / f"{base_name}.caf"
+        m4a_file = out_dir / f"{base_name}.m4a"
+
+        print(f'Converting {base_name}')
+        try:
+            # Determine if FLAC conversion is needed
+            if infile.suffix.lower() != '.flac':
+                convert_to_flac(infile, flac_file)
+                temp_flac = True
+            else:
+                flac_file = infile
+                temp_flac = False
+
+            # Convert FLAC to CAF
+            convert_to_caf(flac_file, caf_file)
+
+            # Convert CAF to M4A
+            convert_to_m4a(caf_file, m4a_file)
+
+            # Extract metadata from original file
+            audio = mutagen.File(infile)
+            if audio is None:
+                print(f"Warning: Could not read metadata from {infile}")
+                tags = {}
+            else:
+                tags = extract_common_tags(audio)
+
+            # Append quote to album name if requested
+            if args.append_quote and 'album' in tags and tags['album']:
+                tags['album'] += "'"
+
+            # Apply metadata to M4A file
+            set_m4a_tags(m4a_file, tags)
+
+            # Clean up intermediate files
+            if temp_flac:
+                flac_file.unlink()
+            caf_file.unlink()
+
+        except subprocess.CalledProcessError as e:
+            print(f"Error processing {infile}: Command failed with {e}")
+        except Exception as e:
+            print(f"Error processing {infile}: {e}")
+
+def convert_to_flac(infile, outfile):
+    """Convert input file to FLAC using ffmpeg."""
+    cmd = [
+        'ffmpeg', '-i', str(infile), '-vn', '-c:a', 'flac', '-sample_fmt', 's16',
+        '-loglevel', 'warning', '-hide_banner', str(outfile)
+    ]
+    subprocess.run(cmd, check=True)
+
+def convert_to_caf(infile, outfile):
+    """Convert FLAC to CAF using afconvert with Sound Check generation."""
+    cmd = ['afconvert', str(infile), '-d', 'alac', '-f', 'caff', '--soundcheck-generate', str(outfile)]
+    subprocess.run(cmd, check=True)
+
+def convert_to_m4a(infile, outfile):
+    """Convert CAF to M4A using afconvert with Sound Check reading."""
+    cmd = ['afconvert', str(infile), '-d', '0', '-f', 'm4af', '--soundcheck-read', str(outfile)]
+    subprocess.run(cmd, check=True)
+
+def extract_common_tags(audio):
+    """Extract common metadata tags from various audio formats."""
+    tags = {}
+    if isinstance(audio, (mutagen.flac.FLAC, mutagen.oggvorbis.OggVorbis, mutagen.oggopus.OggOpus)):
+        tags['title'] = audio.get('title', [''])[0]
+        tags['artist'] = audio.get('artist', [''])[0]
+        tags['album'] = audio.get('album', [''])[0]
+        tags['albumartist'] = audio.get('albumartist', [''])[0]
+        tags['tracknumber'] = audio.get('tracknumber', [''])[0]
+        tags['discnumber'] = audio.get('discnumber', [''])[0]
+        tags['genre'] = audio.get('genre', [''])[0]
+        tags['date'] = audio.get('date', [''])[0]
+    elif isinstance(audio, mutagen.mp3.MP3):
+        tags['title'] = str(audio.get('TIT2', '')) if audio.get('TIT2') else ''
+        tags['artist'] = str(audio.get('TPE1', '')) if audio.get('TPE1') else ''
+        tags['album'] = str(audio.get('TALB', '')) if audio.get('TALB') else ''
+        tags['albumartist'] = str(audio.get('TPE2', '')) if audio.get('TPE2') else ''
+        tags['tracknumber'] = str(audio.get('TRCK', '')) if audio.get('TRCK') else ''
+        tags['discnumber'] = str(audio.get('TPOS', '')) if audio.get('TPOS') else ''
+        tags['genre'] = str(audio.get('TCON', '')) if audio.get('TCON') else ''
+        tags['date'] = str(audio.get('TDRC', '')) if audio.get('TDRC') else ''
+    elif isinstance(audio, mutagen.mp4.MP4):
+        tags['title'] = audio.get('\xa9nam', [''])[0]
+        tags['artist'] = audio.get('\xa9ART', [''])[0]
+        tags['album'] = audio.get('\xa9alb', [''])[0]
+        tags['albumartist'] = audio.get('aART', [''])[0]
+        trkn = audio.get('trkn', [(0, 0)])[0]
+        tags['tracknumber'] = str(trkn[0])
+        disk = audio.get('disk', [(0, 0)])[0]
+        tags['discnumber'] = str(disk[0])
+        tags['genre'] = audio.get('\xa9gen', [''])[0]
+        tags['date'] = audio.get('\xa9day', [''])[0]
+    return tags
+
+def set_m4a_tags(m4a_file, tags):
+    """Set metadata tags on the M4A file."""
+    audio = MP4(m4a_file)
+    if 'title' in tags and tags['title']:
+        audio['\xa9nam'] = [tags['title']]
+    if 'artist' in tags and tags['artist']:
+        audio['\xa9ART'] = [tags['artist']]
+    if 'album' in tags and tags['album']:
+        audio['\xa9alb'] = [tags['album']]
+    if 'albumartist' in tags and tags['albumartist']:
+        audio['aART'] = [tags['albumartist']]
+    if 'tracknumber' in tags and tags['tracknumber']:
+        try:
+            track = int(tags['tracknumber'].split('/')[0])  # Handle 'track/total' format
+            audio['trkn'] = [(track, 0)]
+        except (ValueError, IndexError):
+            pass
+    if 'discnumber' in tags and tags['discnumber']:
+        try:
+            disc = int(tags['discnumber'].split('/')[0])  # Handle 'disc/total' format
+            audio['disk'] = [(disc, 0)]
+        except (ValueError, IndexError):
+            pass
+    if 'genre' in tags and tags['genre']:
+        audio['\xa9gen'] = [tags['genre']]
+    if 'date' in tags and tags['date']:
+        audio['\xa9day'] = [tags['date']]
+    audio.save()
+
+if __name__ == '__main__':
+    main()
