@@ -4,14 +4,13 @@ import sys
 from pathlib import Path
 from pypdf import PdfReader, PdfWriter
 
-def split_pdf(input_pdf_path: str, split_page_numbers: list[int] = None) -> None:
+def split_pdf(input_path: Path, output_folder: Path, split_page_numbers: list[int] = None) -> None:
     """
     Splits a PDF into multiple parts based on the provided list of page numbers.
     
     :param input_pdf_path: Path to the input PDF file.
     :param split_page_numbers: List of page numbers where the PDF should be split. If none, every 10 pages is split.
     """
-    input_path = Path(input_pdf_path)
     # Check if the input file exists
     if not input_path.exists():
         raise FileNotFoundError(f"Input file '{input_path}' not found.")
@@ -31,7 +30,7 @@ def split_pdf(input_pdf_path: str, split_page_numbers: list[int] = None) -> None
 
         split_page_numbers = split_page_numbers + [num_pages + 1]
         for end_page in split_page_numbers:            
-            output_path = input_path.with_name(f"{base_name}_{part_number:03d}{ext}")
+            output_path = output_folder / f"{base_name}_{part_number:03d}{ext}"
             
             writer = PdfWriter()
             for page_num in range(start_page - 1, end_page - 1):
@@ -50,18 +49,20 @@ if __name__ == "__main__":
 
     # Set up command-line argument parser
     parser = argparse.ArgumentParser(description="Split a PDF into multiple files.")
-    parser.add_argument("input_file", help="Path to the input PDF file")
+    parser.add_argument("input_file", type=Path, help="Path to the input PDF file")
+    parser.add_argument('-o','--outdir', type=Path, help="Path folder for output (default: same as PDF file)")
     parser.add_argument('-s',
-        "--split_points",
+        "--splits",
         help="Comma-separated list of page numbers where splits should occur",
         default=None
     )
     args = parser.parse_args()
+    odir: Path = args.outdir if args.outdir is not None else args.input_file.parent
 
     # Parse split points if provided
-    if args.split_points:
+    if args.splits:
         try:
-            split_points = list(sorted(int(p) for p in args.split_points.split(",") if p != '1'))            
+            split_points = list(sorted(int(p) for p in args.splits.split(",") if p != '1'))            
             if len(split_points) == 0:
                 split_points = None
         except ValueError:
@@ -72,7 +73,7 @@ if __name__ == "__main__":
 
     # Call the split_pdf function
     try:
-        split_pdf(args.input_file, split_points)
+        split_pdf(args.input_file, odir, split_points)
     except Exception as e:
         print(f"Error: {e}")
         sys.exit(1)
