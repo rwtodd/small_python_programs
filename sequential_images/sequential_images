@@ -7,212 +7,111 @@ import subprocess
 import shlex # Used for safely formatting command for printing
 from pathlib import Path # Import Path from pathlib
 
-def convert_and_rename_images_in_subdirs(base_dir=".", delete_original_after_convert=False):
-    """
-    Traverses immediate subdirectories of base_dir, finds the last
-    YYYY-MM-NNNN.webp file for the current month, and processes
-    other image files (.webp, .png, .gif, .jpeg, .jpg) sequentially
-    using pathlib.
+class DestDirs:
+    MAX_FILES : int = 200
 
-    - .webp files are renamed.
-    - Other formats are converted to .webp using ImageMagick's 'magick' command.
+    @staticmethod
+    def _make_new_destdir(base_dir : Path) -> Path:
+        today = datetime.date.today()
+        latest_dir = base_dir / f"{today.year:04d}-{today.month:02d}"
+        n = 1
+        while latest_dir.exists():
+            latest_dir = latest_dir.with_name(latest_dir.name + f"-{n}")
+            n += 1
+        latest_dir.mkdir()
+        return latest_dir
 
-    Args:
-        base_dir (str | Path): The directory whose subdirectories will be processed.
-                               Defaults to the current directory (".").
-        delete_original_after_convert (bool): If True, deletes the original
-                                             .png/.gif/.jpeg file after successful
-                                             conversion to .webp. Defaults to False.
+    """Maintains numbered subdirs with 100 files each"""
+    def __init__(self, base_dir: Path):
+        self._base = base_dir
 
-    Requires:
-        - ImageMagick installed and the 'magick' command accessible in the system PATH.
-    """
-    # --- Configuration ---
-    CONVERSION_QUALITY = "75" # ImageMagick quality setting for webp conversion
-    # --- End Configuration ---
+        # find the latest open dir...
+        latest_dir: Path|None = None
+        for entry in self._base.iterdir():
+            if entry.is_dir() and entry.name.startswith('2'): # HACK! starts with 2 is good enough...
+                if (latest_dir is None) or (latest_dir.name < entry.name):
+                    latest_dir = entry
+        
+        if latest_dir is None:  # not even one found!
+            latest_dir = DestDirs._make_new_destdir(self._base)
 
-    try:
-        # Convert base_dir to a Path object for consistency
-        base_path = Path(base_dir).resolve() # Resolve to an absolute path
+        # ok, we have the last directory, see how many files there are
+        fname_re = re.compile(r'img-(\d+).webp', re.IGNORECASE)
+        last_file = 0
+        for entry in latest_dir.iterdir():
+            if entry.is_file():
+                if match := fname_re.match(entry.name):
+                    last_file = max(last_file, int(match.group(1)))
+        
+        # if we are out of space, move on...
+        if last_file >= DestDirs.MAX_FILES:
+            last_file, latest_dir = 0, DestDirs._make_new_destdir(self._base)
+        self._directory = latest_dir
+        self._last_file = last_file
 
-        # Check if 'magick' command exists
-        try:
-            subprocess.run(['magick', '-version'], check=True, capture_output=True)
-            print("ImageMagick 'magick' command found.")
-        except (subprocess.CalledProcessError, FileNotFoundError):
-            print("Error: ImageMagick 'magick' command not found or not executable.", file=sys.stderr)
-            print("Please install ImageMagick and ensure 'magick' is in your system PATH.", file=sys.stderr)
-            sys.exit(1) # Exit if magick is not available
+    def move_in_file(self, src : Path) -> None:
+        """Move a file into the destiation dir, converting it to WEBP if necessary"""
+        CONVERSION_QUALITY = "75" # ImageMagick quality setting for webp conversion
+        new_fp = self._directory / f"img-{self._last_file + 1:04d}.webp"
+        if (src.suffix == '.webp') or (src.suffix == '.WEBP'):
+            src.rename(new_fp)
+            self._last_file += 1
+        else:
+            command = [
+                'magick',
+                str(src), # Explicitly convert Path to string for magick if needed (though often not)
+                '-quality', CONVERSION_QUALITY,
+                str(new_fp) # Explicitly convert Path to string
+            ]
+            # Use shlex.join for safe printing of the command
+            print(f"  Running command: {' '.join(shlex.quote(arg) for arg in command)}")
 
-        # Get the current year and month
-        now = datetime.datetime.now()
-        current_year = now.year
-        current_month = now.month
-        current_ym_str = f"{current_year:04d}-{current_month:02d}"
-        print(f"Processing for current month: {current_ym_str}")
-        print(f"Base directory: {base_path}")
+            # Execute the command
+            result = subprocess.run(command, capture_output=True, text=True, check=False)
 
-
-        # Regex to match the desired filename format YYYY-MM-NNNN.webp
-        # It captures year (group 1), month (group 2), and sequence (group 3)
-        target_pattern = re.compile(r"(\d{4})-(\d{2})-(\d{4})\.webp$", re.IGNORECASE)
-
-        # Regex to match image files (.webp, .png, .gif, .jpeg, .jpg) that DO NOT start with YYYY-
-        # Captures the filename base (group 1) and extension (group 2)
-        process_pattern = re.compile(r"^(?!\d{4}-)(.+)\.(webp|png|gif|jpe?g)$", re.IGNORECASE)
-
-        # Iterate through items in the base directory using pathlib
-        for entry in base_path.iterdir():
-            # Process only if it's a directory
-            if entry.is_dir():
-                subdir_path = entry # entry is already a Path object
-                print(f"\n--- Processing Subdirectory: {subdir_path} ---")
-
-                max_seq_num_current_month = 0
-                # Store tuples of (Path object for the file, original extension)
-                files_to_process: list[tuple[Path, str]] = []
-
+            # Check if conversion was successful
+            if result.returncode == 0:
+                self._last_file += 1
                 try:
-                    # List files in the subdirectory using pathlib
-                    for sub_entry in subdir_path.iterdir():
-                        # Process only files
-                        if sub_entry.is_file():
-                            filename = sub_entry.name # Get filename string
-
-                            # Check if it matches the target pattern YYYY-MM-NNNN.webp
-                            target_match = target_pattern.match(filename)
-                            if target_match:
-                                year = int(target_match.group(1))
-                                month = int(target_match.group(2))
-                                seq_num = int(target_match.group(3))
-
-                                # Check if it's from the current year and month
-                                if year == current_year and month == current_month:
-                                    max_seq_num_current_month = max(max_seq_num_current_month, seq_num)
-
-                            else:
-                                # Check if it's an image file that needs processing (rename or convert)
-                                process_match = process_pattern.match(filename)
-                                if process_match:
-                                    extension = process_match.group(2).lower()
-                                    # Handle jpeg/jpg consistently
-                                    if extension == "jpeg":
-                                        extension = "jpg"
-                                    # Store the Path object and the extension
-                                    files_to_process.append((sub_entry, extension))
+                    src.unlink()
+                except OSError as delete_error:
+                    print(f"  [Warning] Could not delete original file '{src.name}': {delete_error}", file=sys.stderr)
+            else:
+                # Print error message from magick if conversion failed
+                print(f"  [Error] ImageMagick conversion failed for '{src.name}'.", file=sys.stderr)
+                print(f"  Return Code: {result.returncode}", file=sys.stderr)
+                if result.stderr:
+                    print(f"  Stderr:\n{result.stderr.strip()}", file=sys.stderr)
+                if result.stdout: # Sometimes errors go to stdout
+                     print(f"  Stdout:\n{result.stdout.strip()}", file=sys.stderr)
+        if self._last_file > DestDirs.MAX_FILES:
+            self._last_file, self._directory = 0, DestDirs._make_new_destdir(self._base)
 
 
-                    # Sort files for consistent ordering (optional but recommended)
-                    # Sort by the Path object itself (which sorts by full path string)
-                    files_to_process.sort(key=lambda x: x[0])
-
-                    # Start processing from the next sequence number
-                    next_seq_num = max_seq_num_current_month + 1
-
-                    if not files_to_process:
-                        print("  No image files found needing rename or conversion in this directory.")
-                    else:
-                         print(f"  Found highest sequence for {current_ym_str}: {max_seq_num_current_month:04d}")
-                         print(f"  Starting processing sequence from: {next_seq_num:04d}")
-
-                    # Perform the renaming or conversion
-                    for old_filepath, original_extension in files_to_process:
-                        # Construct the new filename string
-                        new_filename_webp_str = f"{current_ym_str}-{next_seq_num:04d}.webp"
-                        # Construct the new Path object
-                        new_filepath_webp = subdir_path / new_filename_webp_str
-
-                        try:
-                            # Ensure the new filename doesn't already exist using Path.exists()
-                            if new_filepath_webp.exists():
-                                 print(f"  [Skipping] Target filename already exists: {new_filepath_webp}")
-                                 continue # Skip this file
-
-                            operation_successful = False
-                            if original_extension == "webp":
-                                # --- Rename .webp file using Path.rename() ---
-                                print(f"  Renaming '{old_filepath.name}' -> '{new_filepath_webp.name}'")
-                                old_filepath.rename(new_filepath_webp)
-                                operation_successful = True
-                            else:
-                                # --- Convert other formats using ImageMagick ---
-                                print(f"  Converting '{old_filepath.name}' -> '{new_filepath_webp.name}' (Quality: {CONVERSION_QUALITY})")
-                                # Construct the command safely (passing Path objects directly)
-                                command = [
-                                    'magick',
-                                    str(old_filepath), # Explicitly convert Path to string for magick if needed (though often not)
-                                    '-quality', CONVERSION_QUALITY,
-                                    str(new_filepath_webp) # Explicitly convert Path to string
-                                ]
-                                # Use shlex.join for safe printing of the command
-                                print(f"  Running command: {' '.join(shlex.quote(arg) for arg in command)}")
-
-                                # Execute the command
-                                # Pass Path objects directly to subprocess.run (works in Python 3.6+)
-                                # Or use the string versions from 'command' list above
-                                result = subprocess.run(
-                                    ['magick', old_filepath, '-quality', CONVERSION_QUALITY, new_filepath_webp],
-                                    capture_output=True, text=True, check=False
-                                )
-
-                                # Check if conversion was successful
-                                if result.returncode == 0:
-                                    print(f"  Conversion successful for '{old_filepath.name}'")
-                                    operation_successful = True
-                                    # Optionally delete the original file using Path.unlink()
-                                    if delete_original_after_convert:
-                                        try:
-                                            old_filepath.unlink()
-                                            print(f"  Deleted original file: '{old_filepath.name}'")
-                                        except OSError as delete_error:
-                                            print(f"  [Warning] Could not delete original file '{old_filepath.name}': {delete_error}", file=sys.stderr)
-                                else:
-                                    # Print error message from magick if conversion failed
-                                    print(f"  [Error] ImageMagick conversion failed for '{old_filepath.name}'.", file=sys.stderr)
-                                    print(f"  Return Code: {result.returncode}", file=sys.stderr)
-                                    if result.stderr:
-                                        print(f"  Stderr:\n{result.stderr.strip()}", file=sys.stderr)
-                                    if result.stdout: # Sometimes errors go to stdout
-                                         print(f"  Stdout:\n{result.stdout.strip()}", file=sys.stderr)
-
-                            # Increment sequence number only if operation was successful
-                            if operation_successful:
-                                next_seq_num += 1
-
-                        except OSError as file_op_error:
-                            # OSError can be raised by .rename() or .unlink()
-                            print(f"  [Error] File operation failed for '{old_filepath.name}': {file_op_error}", file=sys.stderr)
-                        except Exception as e:
-                            print(f"  [Unexpected Error] during processing of '{old_filepath.name}': {e}", file=sys.stderr)
-
-                except OSError as sub_scan_error:
-                    # Errors during subdir_path.iterdir()
-                    print(f"  [Error] Could not scan subdirectory '{subdir_path}': {sub_scan_error}", file=sys.stderr)
-                except Exception as e:
-                     print(f"  [Unexpected Error] processing subdirectory '{subdir_path}': {e}", file=sys.stderr)
-
-    except FileNotFoundError:
-        # Error if base_dir doesn't exist
-        print(f"Error: Base directory '{base_dir}' not found.", file=sys.stderr)
-    except PermissionError:
-        # Error iterating directories due to permissions
-        print(f"Error: Permission denied to access '{base_dir}' or its subdirectories.", file=sys.stderr)
-    except Exception as e:
-        print(f"An unexpected error occurred: {e}", file=sys.stderr)
+def convert_and_rename_images_in_subdirs(src_dir : Path, dest_dirs: DestDirs) -> None:
+    """
+    Traverses src_dir, getting image files and pushing them into dest_dirs.
+    """
+    process_pattern = re.compile(r"^\.(webp|png|gif|jpe?g)$", re.IGNORECASE)
+    for entry in src_dir.iterdir():        
+        if entry.is_file() and process_pattern.match(entry.suffix):
+            print(f'Processing {entry.name}.', file=sys.stderr)
+            dest_dirs.move_in_file(entry)
 
 if __name__ == "__main__":
-    print("Starting image processing (rename/convert) script using pathlib...")
-    print("IMPORTANT: This script requires ImageMagick ('magick' command) to be installed.")
+    # Check if 'magick' command exists
+    try:
+        subprocess.run(['magick', '-version'], check=True, capture_output=True)
+    except (subprocess.CalledProcessError, FileNotFoundError):
+        print("Error: ImageMagick 'magick' command not found or not executable.", file=sys.stderr)
+        print("Please install ImageMagick and ensure 'magick' is in your system PATH.", file=sys.stderr)
+        sys.exit(1) # Exit if magick is not available
 
-    # --- Configuration ---
-    # Set to True if you want the original PNG/GIF/JPEG files deleted after successful conversion
-    DELETE_ORIGINAL = True
-    # Set the base directory to process. "." means the current directory.
-    BASE_PROCESSING_DIR = "."
-    # --- End Configuration ---
-
-    if DELETE_ORIGINAL:
-        print("WARNING: Original non-webp files will be deleted after successful conversion.")
-
-    convert_and_rename_images_in_subdirs(BASE_PROCESSING_DIR, delete_original_after_convert=DELETE_ORIGINAL)
-    print("\nProcessing finished.")
+    import argparse
+    ap = argparse.ArgumentParser(description="Copies images into webp sequentially.")
+    ap.add_argument('-d','--dest', type=Path, default='.', help="Base path for output directories (default '.')")
+    ap.add_argument('-s', '--src', type=Path, default='input', help="Base directory for new files to add (default 'input')")
+    args = ap.parse_args()
+    
+    dd = DestDirs(args.dest)
+    convert_and_rename_images_in_subdirs(args.src, dd)
