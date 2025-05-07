@@ -84,7 +84,7 @@ class DestDirs:
                     print(f"  Stderr:\n{result.stderr.strip()}", file=sys.stderr)
                 if result.stdout: # Sometimes errors go to stdout
                      print(f"  Stdout:\n{result.stdout.strip()}", file=sys.stderr)
-        if self._last_file > DestDirs.MAX_FILES:
+        if self._last_file >= DestDirs.MAX_FILES:
             self._last_file, self._directory = 0, DestDirs._make_new_destdir(self._base)
 
 
