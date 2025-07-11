@@ -1,0 +1,294 @@
+#!/usr/bin/env python3
+#!/Users/richardtodd/venv/cli/bin/python
+
+import concurrent.futures
+import os
+import sys
+import subprocess
+import zipfile
+import datetime
+import uuid
+from pathlib import Path
+from typing import Any
+import argparse
+
+# --- Configuration ---
+SERIES = 'G.I. Joe'
+PUBLISHER = 'Marvel'
+WEBP_QUALITY = '80%'
+TEMP_OUT = 'temp_out'
+
+CONTAINER_XML = """<?xml version="1.0"?>
+<container xmlns="urn:oasis:names:tc:opendocument:xmlns:container" version="1.0">
+ <rootfiles>
+  <rootfile full-path="OEBPS/content.opf" media-type="application/oebps-package+xml"/>
+ </rootfiles>
+</container>"""
+
+def img_path(fname: str) -> str:
+    """Generate the zip path of an image"""
+    return 'OEBPS/Images/' + fname
+
+def txt_path(fname: str) -> str:
+    """Generate the zip path of an xhtml text file"""
+    return 'OEBPS/Text/' + fname
+
+def content_path() -> str:
+    """Generate the filename for the content.opf file"""
+    return 'OEBPS/content.opf'
+
+def process_image(jpg_path: Path) -> tuple[str, tuple[int,int], bytes]:
+    """
+    Converts a JPG to WEBP in memory, compares their sizes, and returns the
+    smaller data with its corresponding new filename.
+
+    Args:
+        jpg_path: The path to the input JPG file.
+
+    Returns:
+        A tuple containing the determined filename (e.g., 'image.webp' or
+        'image.jpg') and the image data in bytes.
+    """
+    original_filename_stem = jpg_path.stem
+    jpg_data = jpg_path.read_bytes()
+
+    try:
+        # Execute the ImageMagick commands
+        result = subprocess.run(
+            [ 'magick', 'identify', '-format', '%w %h', 'jpg:-' ],
+            input=jpg_data,
+            capture_output=True,
+            check=True  # Will raise CalledProcessError on failure
+        )
+        imwidth, imheight = [int(num) for num in result.stdout.split()]
+
+        result = subprocess.run(
+            [ 'magick', 'convert', '-quality', WEBP_QUALITY, 'jpg:-',  'webp:-' ],
+            input=jpg_data,
+            capture_output=True,
+            check=True  # Will raise CalledProcessError on failure
+        )
+        webp_data = result.stdout
+
+        # Compare the original JPG size with the new WEBP size
+        if len(webp_data) > 0 and len(webp_data) < len(jpg_data):
+            # The WEBP is smaller, so we'll use it
+            return f"{original_filename_stem}.webp", (imwidth,imheight), webp_data
+        else:
+            # The JPG is smaller or conversion failed, use the original
+            return f"{original_filename_stem}.jpg", (imwidth,imheight), jpg_data
+            
+    except subprocess.CalledProcessError as e:
+        # This error occurs if ImageMagick fails to convert the image
+        print(f"⚠️  Could not convert '{jpg_path.name}'. Using original JPG. Reason: {e.stderr.decode().strip()}", file=sys.stderr)
+        return f"{original_filename_stem}.jpg", (0,0), jpg_data
+
+def generate_xhtml_page(ifile: str, dims: tuple[int,int]) -> str:
+    """Generate the xhtml of a page with a single image on it."""
+    w,h = dims
+    return f"""<?xml version="1.0" encoding="UTF-8" standalone="no" ?>
+<!DOCTYPE html>
+<html xmlns="http://www.w3.org/1999/xhtml" xmlns:epub="http://www.idpf.org/2007/ops">
+<head>
+  <title>{Path(ifile).stem}</title>
+</head>
+<body>
+  <div style="height: 100vh; text-align: center; padding: 0pt; margin: 0pt;">
+    <svg xmlns="http://www.w3.org/2000/svg" height="100%" preserveAspectRatio="xMidYMid meet" version="1.1" viewBox="0 0 {w} {h}" width="100%" xmlns:xlink="http://www.w3.org/1999/xlink">
+      <image width="{w}" height="{h}" xlink:href="../Images/{ifile}"/>
+    </svg>
+  </div>
+</body>
+</html>"""
+
+def mtype(fname:str) -> str:
+    """Generate a media type from a file name"""
+    if fname.endswith('webp'):
+        return 'image/webp'
+    elif fname.endswith('xhtml'):
+        return 'application/xhtml+xml'
+    else:
+        return 'image/jpeg'
+
+# modified: 2025-06-21T21:38:33Z
+#bookid: urn:uuid:e77827ed-dfc3-4262-8841-954786f73fe3
+def generate_content_opf(metadata: dict[str,Any], images: list[str], pages: list[str]) -> str:
+    """Create a contents.opf file suitable for the epub"""
+    parts = []
+    parts.append(f"""<?xml version="1.0" encoding="utf-8"?>
+<package version="3.0" unique-identifier="BookId" xmlns="http://www.idpf.org/2007/opf">
+  <metadata xmlns:dc="http://purl.org/dc/elements/1.1/" xmlns:opf="http://www.idpf.org/2007/opf">
+    <dc:language>en</dc:language>
+    <dc:creator id="cre">{metadata['publisher']}</dc:creator>
+    <meta refines="#cre" property="role" scheme="marc:relators">aut</meta>
+    <dc:date>{metadata['year']}</dc:date>
+    <dc:title>{metadata['series']} {metadata['issue']:03d}</dc:title>
+    <meta property="dcterms:modified">{datetime.date.today().isoformat()}T12:00:00Z</meta>
+    <dc:identifier id="BookId">urn:uuid:{uuid.uuid4()}</dc:identifier>
+    <meta name="cover" content="{images[0]}" />
+  </metadata>
+  <manifest>
+""")
+    parts.append('\n'.join(f'<item id="{pg}" href="Text/{pg}" media-type="{mtype(pg)}" properties="svg"/>' for pg in pages) + 
+                 f'\n<item id="nav.xhtml" href="Text/nav.xhtml" media-type="{mtype('nav.xhtml')}" properties="nav"/>\n' +
+                 f'\n<item id="{images[0]}" href="Images/{images[0]}" media-type="{mtype(images[0])}" properties="cover-image"/>\n' +
+                 '\n'.join(f'<item id="{pg}" href="Images/{pg}" media-type="{mtype(pg)}"/>' for pg in images[1:]))
+    parts.append(f"""
+  </manifest>
+  <spine>
+    <itemref idref="{pages[0]}"/>
+    <itemref idref="nav.xhtml" linear="no"/>
+""")
+    parts.append('\n'.join(f'<itemref idref="{pg}"/>' for pg in pages[1:]))
+    parts.append("""
+  </spine>
+</package>""")
+    return ''.join(parts)
+
+def generate_nav_xhtml(pages: list[str]) -> str:
+    """Create a nav xhtml page to use for TOC"""
+    return f"""<?xml version="1.0" encoding="utf-8"?>
+<!DOCTYPE html>
+<html xmlns="http://www.w3.org/1999/xhtml" xmlns:epub="http://www.idpf.org/2007/ops" lang="en" xml:lang="en">
+<head>
+  <title>ePub NAV</title>
+  <style>nav#landmarks {{ display:none; }}
+nav#page-list {{ display:none; }}
+ol {{ list-style-type: none; }}
+</style>
+</head>
+<body epub:type="frontmatter">
+  <nav epub:type="toc" id="toc" role="doc-toc">
+    <h1>Table of Contents</h1>
+    <ol>
+      <li>
+        <a href="{pages[0]}">Cover</a>
+      </li>
+      <li>
+        <a href="{pages[-1]}">Last Page</a>
+      </li>
+    </ol>
+  </nav>
+<nav epub:type="landmarks" id="landmarks" hidden="">
+    <h1>Landmarks</h1>
+    <ol>
+      <li>
+        <a epub:type="toc" href="#toc">Table of Contents</a>
+      </li>
+      <li>
+        <a epub:type="cover" href="{pages[0]}">Cover</a>
+      </li>
+    </ol>
+  </nav>
+</body>
+</html>"""
+
+def create_optimized_zip(
+    source_archive: Path,
+    metadata: dict[str,Any],
+    output_file: Path
+) -> None:
+    """
+    Finds all JPG images in a source directory, processes them in parallel to
+    find the smallest version (JPG vs. WEBP), and adds that version to a
+    ZIP archive.
+
+    Args:
+        source_directory: Path to the directory containing .jpg images.
+        output_zip_file: Path for the final .zip file.
+        max_processes: The maximum number of parallel processes to use.
+                       Defaults to the number of CPU cores.
+    """
+    # 1. expand the comic archive
+    src_path = Path(TEMP_OUT)
+    try:
+        subprocess.run(
+            ['7zz', 'e', f'-o{TEMP_OUT}', str(source_archive)],
+            check=True
+        )
+    except (FileNotFoundError, subprocess.CalledProcessError):
+        print("❌ Error: could not expand the comic!", file=sys.stderr)
+        return
+
+    # 2. Find all .jpg files in the source directory
+    jpg_files: list[Path] = list(src_path.glob('*.jpg')) + list(src_path.glob('*.jpeg'))
+    if not jpg_files:
+        print(f"🤷 No .jpg or .jpeg files found in '{src_path}'.", file=sys.stderr)
+        return
+
+    max_processes = os.cpu_count() or 4     
+    print(f"⚙️  Found {len(jpg_files)} images. Starting processing with up to {max_processes} parallel workers.")
+
+    # 3. Process files in parallel and write to the zip archive
+    try:
+        with zipfile.ZipFile(output_file, 'w', compression=zipfile.ZIP_DEFLATED, compresslevel = 9) as zf:
+            # the first thing in the zipfile, must be STORED and mark this as an epub.
+            zf.writestr('mimetype', 'application/epub+zip', zipfile.ZIP_STORED)
+            # now we need the container.xml file...
+            zf.writestr('META-INF/container.xml', CONTAINER_XML)
+            
+            image_files, text_files = list(), list()
+            with concurrent.futures.ThreadPoolExecutor(max_workers=max_processes) as executor:
+                # Create a future for each image processing task
+                future_to_path = {
+                    executor.submit(process_image, jpg_path): jpg_path for jpg_path in jpg_files
+                }
+
+                # Process results as they are completed
+                for future in concurrent.futures.as_completed(future_to_path):
+                    original_path = future_to_path[future]
+                    try:
+                        filename, dims, data = future.result()
+                        if filename.startswith('zzz'):
+                            print('Skipping',filename,file=sys.stderr)
+                        else:
+                            zf.writestr(img_path(filename), data)
+                            image_files.append({ 'fname': filename, 'dims': dims })
+                            # print(f"✅ Added '{filename}' (from '{original_path.name}') to ZIP.")
+                    except Exception as exc:
+                        print(f"❌ Failed to process '{original_path.name}': {exc}", file=sys.stderr)
+
+            # ok, now write xhtml files for all the images, in order...
+            image_files.sort(key=lambda f: f['fname'])
+            for ifile in image_files:
+                xmlfile = Path(ifile['fname']).stem + '.xhtml'
+                text_files.append(xmlfile)
+                zf.writestr(txt_path(xmlfile), generate_xhtml_page(ifile['fname'], ifile['dims']))
+            
+            # create nav.xhtml    
+            zf.writestr(txt_path('nav.xhtml'), generate_nav_xhtml(text_files))
+
+            # create content.opf
+            zf.writestr(content_path(), generate_content_opf(metadata, list(img['fname'] for img in image_files), text_files))
+
+        print(f"\n🎉 Success! Created optimized archive at: {output_file}")
+
+    except Exception as exc:
+        print(f"An unexpected error occurred: {exc}", file=sys.stderr)
+
+def prepare_out_dir(odir: Path) -> None:
+    """Empty the out dir, or create it if necessary"""
+    if odir.exists():
+        for file in odir.iterdir():
+            if file.is_file():  # Check if it's a file
+                file.unlink()  # Remove the file
+    else:
+        odir.mkdir()
+
+if __name__ == '__main__':
+    parser = argparse.ArgumentParser(description='Convert a .cbz/.cbr file to .epub')
+    parser.add_argument('comic', type=Path, help='The comic to convert')
+    parser.add_argument('--series', default=SERIES, help='The name of comic series')
+    parser.add_argument('--publisher', default=PUBLISHER, help='the publisher of the comic')
+    parser.add_argument('--inum', type=int, default=-1, help='The issue number')
+    parser.add_argument('--iyear', type=int, default=-1, help='The issue year of publication')
+    args = parser.parse_args()
+
+    odir = Path('temp_out')
+    prepare_out_dir(odir)
+    result_epub = Path(f'{args.series} {args.inum:03d}.epub')
+    if result_epub.exists():
+        print('outfile already exists!', file=sys.stderr)
+    else:
+        metadata = { 'series': args.series, 'issue': args.inum, 'year': args.iyear, 'publisher': args.publisher }
+        create_optimized_zip(args.comic, metadata, result_epub)
