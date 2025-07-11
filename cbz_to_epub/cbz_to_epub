@@ -242,8 +242,9 @@ def create_optimized_zip(
                         if filename.startswith('zzz'):
                             print('Skipping',filename,file=sys.stderr)
                         else:
-                            zf.writestr(img_path(filename), data)
-                            image_files.append({ 'fname': filename, 'dims': dims })
+                            nospace = filename.replace(' ','')
+                            zf.writestr(img_path(nospace), data)
+                            image_files.append({ 'fname': nospace, 'dims': dims })
                             # print(f"✅ Added '{filename}' (from '{original_path.name}') to ZIP.")
                     except Exception as exc:
                         print(f"❌ Failed to process '{original_path.name}': {exc}", file=sys.stderr)
