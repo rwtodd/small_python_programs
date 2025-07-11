@@ -8,6 +8,7 @@ import subprocess
 import zipfile
 import datetime
 import uuid
+import re
 from pathlib import Path
 from typing import Any
 import argparse
@@ -195,10 +196,10 @@ def create_optimized_zip(
 
     Args:
         source_directory: Path to the directory containing .jpg images.
-        output_zip_file: Path for the final .zip file.
-        max_processes: The maximum number of parallel processes to use.
-                       Defaults to the number of CPU cores.
+        metadata: a dict of metadata about the file
+        output_file: Path for the final .zip file.
     """
+    nonalph = re.compile(r'[^a-zA-Z0-9.]')
     # 1. expand the comic archive
     src_path = Path(TEMP_OUT)
     try:
@@ -211,7 +212,7 @@ def create_optimized_zip(
         return
 
     # 2. Find all .jpg files in the source directory
-    jpg_files: list[Path] = list(src_path.glob('*.jpg')) + list(src_path.glob('*.jpeg'))
+    jpg_files: list[Path] = list(src_path.glob('*.jpg')) + list(src_path.glob('*.jpeg')) + list(src_path.glob('*.JPG'))
     if not jpg_files:
         print(f"🤷 No .jpg or .jpeg files found in '{src_path}'.", file=sys.stderr)
         return
@@ -242,9 +243,9 @@ def create_optimized_zip(
                         if filename.startswith('zzz'):
                             print('Skipping',filename,file=sys.stderr)
                         else:
-                            nospace = filename.replace(' ','')
-                            zf.writestr(img_path(nospace), data)
-                            image_files.append({ 'fname': nospace, 'dims': dims })
+                            allalpha = nonalph.sub('',filename)  # only alphanumerics
+                            zf.writestr(img_path(allalpha), data)
+                            image_files.append({ 'fname': allalpha, 'dims': dims })
                             # print(f"✅ Added '{filename}' (from '{original_path.name}') to ZIP.")
                     except Exception as exc:
                         print(f"❌ Failed to process '{original_path.name}': {exc}", file=sys.stderr)
