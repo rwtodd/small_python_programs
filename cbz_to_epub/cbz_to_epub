@@ -5,38 +5,15 @@ import concurrent.futures
 import os
 import sys
 import subprocess
-import zipfile
-import datetime
-import uuid
 import re
 from pathlib import Path
 from typing import Any
 import argparse
+from rwt.epub import EpubWriter
 
 # --- Configuration ---
-SERIES = 'G.I. Joe'
-PUBLISHER = 'Marvel'
 WEBP_QUALITY = '80%'
 TEMP_OUT = 'temp_out'
-
-CONTAINER_XML = """<?xml version="1.0"?>
-<container xmlns="urn:oasis:names:tc:opendocument:xmlns:container" version="1.0">
- <rootfiles>
-  <rootfile full-path="OEBPS/content.opf" media-type="application/oebps-package+xml"/>
- </rootfiles>
-</container>"""
-
-def img_path(fname: str) -> str:
-    """Generate the zip path of an image"""
-    return 'OEBPS/Images/' + fname
-
-def txt_path(fname: str) -> str:
-    """Generate the zip path of an xhtml text file"""
-    return 'OEBPS/Text/' + fname
-
-def content_path() -> str:
-    """Generate the filename for the content.opf file"""
-    return 'OEBPS/content.opf'
 
 def process_image(jpg_path: Path) -> tuple[str, tuple[int,int], bytes]:
     """
@@ -84,106 +61,6 @@ def process_image(jpg_path: Path) -> tuple[str, tuple[int,int], bytes]:
         print(f"⚠️  Could not convert '{jpg_path.name}'. Using original JPG. Reason: {e.stderr.decode().strip()}", file=sys.stderr)
         return f"{original_filename_stem}.jpg", (0,0), jpg_data
 
-def generate_xhtml_page(ifile: str, dims: tuple[int,int]) -> str:
-    """Generate the xhtml of a page with a single image on it."""
-    w,h = dims
-    return f"""<?xml version="1.0" encoding="UTF-8" standalone="no" ?>
-<!DOCTYPE html>
-<html xmlns="http://www.w3.org/1999/xhtml" xmlns:epub="http://www.idpf.org/2007/ops">
-<head>
-  <title>{Path(ifile).stem}</title>
-</head>
-<body>
-  <div style="height: 100vh; text-align: center; padding: 0pt; margin: 0pt;">
-    <svg xmlns="http://www.w3.org/2000/svg" height="100%" preserveAspectRatio="xMidYMid meet" version="1.1" viewBox="0 0 {w} {h}" width="100%" xmlns:xlink="http://www.w3.org/1999/xlink">
-      <image width="{w}" height="{h}" xlink:href="../Images/{ifile}"/>
-    </svg>
-  </div>
-</body>
-</html>"""
-
-def mtype(fname:str) -> str:
-    """Generate a media type from a file name"""
-    if fname.endswith('webp'):
-        return 'image/webp'
-    elif fname.endswith('xhtml'):
-        return 'application/xhtml+xml'
-    else:
-        return 'image/jpeg'
-
-# modified: 2025-06-21T21:38:33Z
-#bookid: urn:uuid:e77827ed-dfc3-4262-8841-954786f73fe3
-def generate_content_opf(metadata: dict[str,Any], images: list[str], pages: list[str]) -> str:
-    """Create a contents.opf file suitable for the epub"""
-    parts = []
-    parts.append(f"""<?xml version="1.0" encoding="utf-8"?>
-<package version="3.0" unique-identifier="BookId" xmlns="http://www.idpf.org/2007/opf">
-  <metadata xmlns:dc="http://purl.org/dc/elements/1.1/" xmlns:opf="http://www.idpf.org/2007/opf">
-    <dc:language>en</dc:language>
-    <dc:creator id="cre">{metadata['publisher']}</dc:creator>
-    <meta refines="#cre" property="role" scheme="marc:relators">aut</meta>
-    <dc:date>{metadata['year']}</dc:date>
-    <dc:title>{metadata['series']} {metadata['issue']:03d}</dc:title>
-    <meta property="dcterms:modified">{datetime.date.today().isoformat()}T12:00:00Z</meta>
-    <dc:identifier id="BookId">urn:uuid:{uuid.uuid4()}</dc:identifier>
-    <meta name="cover" content="{images[0]}" />
-  </metadata>
-  <manifest>
-""")
-    parts.append('\n'.join(f'<item id="{pg}" href="Text/{pg}" media-type="{mtype(pg)}" properties="svg"/>' for pg in pages) + 
-                 f'\n<item id="nav.xhtml" href="Text/nav.xhtml" media-type="{mtype('nav.xhtml')}" properties="nav"/>\n' +
-                 f'\n<item id="{images[0]}" href="Images/{images[0]}" media-type="{mtype(images[0])}" properties="cover-image"/>\n' +
-                 '\n'.join(f'<item id="{pg}" href="Images/{pg}" media-type="{mtype(pg)}"/>' for pg in images[1:]))
-    parts.append(f"""
-  </manifest>
-  <spine>
-    <itemref idref="{pages[0]}"/>
-    <itemref idref="nav.xhtml" linear="no"/>
-""")
-    parts.append('\n'.join(f'<itemref idref="{pg}"/>' for pg in pages[1:]))
-    parts.append("""
-  </spine>
-</package>""")
-    return ''.join(parts)
-
-def generate_nav_xhtml(pages: list[str]) -> str:
-    """Create a nav xhtml page to use for TOC"""
-    return f"""<?xml version="1.0" encoding="utf-8"?>
-<!DOCTYPE html>
-<html xmlns="http://www.w3.org/1999/xhtml" xmlns:epub="http://www.idpf.org/2007/ops" lang="en" xml:lang="en">
-<head>
-  <title>ePub NAV</title>
-  <style>nav#landmarks {{ display:none; }}
-nav#page-list {{ display:none; }}
-ol {{ list-style-type: none; }}
-</style>
-</head>
-<body epub:type="frontmatter">
-  <nav epub:type="toc" id="toc" role="doc-toc">
-    <h1>Table of Contents</h1>
-    <ol>
-      <li>
-        <a href="{pages[0]}">Cover</a>
-      </li>
-      <li>
-        <a href="{pages[-1]}">Last Page</a>
-      </li>
-    </ol>
-  </nav>
-<nav epub:type="landmarks" id="landmarks" hidden="">
-    <h1>Landmarks</h1>
-    <ol>
-      <li>
-        <a epub:type="toc" href="#toc">Table of Contents</a>
-      </li>
-      <li>
-        <a epub:type="cover" href="{pages[0]}">Cover</a>
-      </li>
-    </ol>
-  </nav>
-</body>
-</html>"""
-
 def create_optimized_zip(
     source_archive: Path,
     metadata: dict[str,Any],
@@ -216,19 +93,16 @@ def create_optimized_zip(
     if not jpg_files:
         print(f"🤷 No .jpg or .jpeg files found in '{src_path}'.", file=sys.stderr)
         return
+    jpg_files.sort() # get the first one as the cover image...
+    cover_img_file = jpg_files[0]
 
     max_processes = os.cpu_count() or 4     
     print(f"⚙️  Found {len(jpg_files)} images. Starting processing with up to {max_processes} parallel workers.")
 
     # 3. Process files in parallel and write to the zip archive
     try:
-        with zipfile.ZipFile(output_file, 'w', compression=zipfile.ZIP_DEFLATED, compresslevel = 9) as zf:
-            # the first thing in the zipfile, must be STORED and mark this as an epub.
-            zf.writestr('mimetype', 'application/epub+zip', zipfile.ZIP_STORED)
-            # now we need the container.xml file...
-            zf.writestr('META-INF/container.xml', CONTAINER_XML)
-            
-            image_files, text_files = list(), list()
+        with EpubWriter(str(output_file), metadata['title'], metadata['author'], metadata['year']) as ew:
+            image_files : list[str] = []
             with concurrent.futures.ThreadPoolExecutor(max_workers=max_processes) as executor:
                 # Create a future for each image processing task
                 future_to_path = {
@@ -244,29 +118,26 @@ def create_optimized_zip(
                             print('Skipping',filename,file=sys.stderr)
                         else:
                             allalpha = nonalph.sub('',filename)  # only alphanumerics
-                            zf.writestr(img_path(allalpha), data)
-                            image_files.append({ 'fname': allalpha, 'dims': dims })
-                            # print(f"✅ Added '{filename}' (from '{original_path.name}') to ZIP.")
+                            ew.add_image_content(allalpha, data, original_path==cover_img_file, dims)
+                            image_files.append(allalpha)
                     except Exception as exc:
                         print(f"❌ Failed to process '{original_path.name}': {exc}", file=sys.stderr)
 
             # ok, now write xhtml files for all the images, in order...
-            image_files.sort(key=lambda f: f['fname'])
+            image_files.sort()
             for ifile in image_files:
-                xmlfile = Path(ifile['fname']).stem + '.xhtml'
-                text_files.append(xmlfile)
-                zf.writestr(txt_path(xmlfile), generate_xhtml_page(ifile['fname'], ifile['dims']))
-            
-            # create nav.xhtml    
-            zf.writestr(txt_path('nav.xhtml'), generate_nav_xhtml(text_files))
+                ew.add_fullpage_pic(str(Path(ifile).with_suffix('.xhtml')), ifile)
 
-            # create content.opf
-            zf.writestr(content_path(), generate_content_opf(metadata, list(img['fname'] for img in image_files), text_files))
+            # add the two TOC entries
+            ew.add_toc_link(str(Path(image_files[0]).with_suffix('.xhtml')), 'Cover')
+            ew.add_toc_link(str(Path(image_files[-1]).with_suffix('.xhtml')), 'Last Page')
 
         print(f"\n🎉 Success! Created optimized archive at: {output_file}")
 
     except Exception as exc:
         print(f"An unexpected error occurred: {exc}", file=sys.stderr)
+        import traceback
+        traceback.print_exception(exc)
 
 def prepare_out_dir(odir: Path) -> None:
     """Empty the out dir, or create it if necessary"""
@@ -280,17 +151,18 @@ def prepare_out_dir(odir: Path) -> None:
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='Convert a .cbz/.cbr file to .epub')
     parser.add_argument('comic', type=Path, help='The comic to convert')
-    parser.add_argument('--series', default=SERIES, help='The name of comic series')
-    parser.add_argument('--publisher', default=PUBLISHER, help='the publisher of the comic')
+    parser.add_argument('--series', default='G.I. Joe', help='The name of comic series')
+    parser.add_argument('--publisher', default='Marvel', help='the publisher of the comic')
     parser.add_argument('--inum', type=int, default=-1, help='The issue number')
     parser.add_argument('--iyear', type=int, default=-1, help='The issue year of publication')
     args = parser.parse_args()
 
     odir = Path('temp_out')
     prepare_out_dir(odir)
-    result_epub = Path(f'{args.series} {args.inum:03d}.epub')
+    title = f'{args.series} {args.inum:03d}'
+    result_epub = Path(f'{title}.epub')
     if result_epub.exists():
         print('outfile already exists!', file=sys.stderr)
     else:
-        metadata = { 'series': args.series, 'issue': args.inum, 'year': args.iyear, 'publisher': args.publisher }
+        metadata = { 'title': title, 'year': args.iyear, 'author': args.publisher }
         create_optimized_zip(args.comic, metadata, result_epub)
