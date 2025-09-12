@@ -15,7 +15,7 @@ def main():
 
     # Define supported music file extensions
     music_extensions = ['*.ogg', '*.flac', '*.mp3', '*.m4a', '*.aac', '*.opus']
-    music_files = []
+    music_files : list[Path] = []
     for ext in music_extensions:
         music_files.extend(Path('.').glob(ext))
 
@@ -32,6 +32,11 @@ def main():
 
         print(f'Converting {base_name}')
         try:
+            # If the input is an MP3, just copy it over
+            if infile.suffix.lower() == '.mp3':
+                infile.rename(out_dir / infile.name)
+                continue
+
             # Determine if FLAC conversion is needed
             if infile.suffix.lower() != '.flac':
                 convert_to_flac(infile, flac_file)
