@@ -98,7 +98,7 @@ def convert_and_rename_images_in_subdirs(src_dir : Path, dest_dirs: DestDirs) ->
             print(f'Processing {entry.name}.', file=sys.stderr)
             dest_dirs.move_in_file(entry)
 
-if __name__ == "__main__":
+def main():
     # Check if 'magick' command exists
     try:
         subprocess.run(['magick', '-version'], check=True, capture_output=True)
@@ -115,3 +115,7 @@ if __name__ == "__main__":
     
     dd = DestDirs(args.dest)
     convert_and_rename_images_in_subdirs(args.src, dd)
+
+if __name__ == "__main__":
+    main()
+

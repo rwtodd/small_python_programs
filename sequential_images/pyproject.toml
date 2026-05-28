@@ -1,0 +1,13 @@
+[project]
+name = "sequential-images"
+version = "1.0.0"
+description = "Move files, converting them to webp and numbering them sequentially in month-based directories"
+readme = "README.md"
+requires-python = ">=3.14"
+dependencies = []
+
+[project.scripts]
+sequential-images = "sequential_images:main"
+
+[tool.uv]
+package = true
