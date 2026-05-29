@@ -1,8 +1,7 @@
-#!/usr/bin/env python3
-
 import argparse
 from datetime import date, timedelta
 from math import ceil
+
 
 def handle_date_input(date_arg: str, today: date) -> date:
     """date_arg should take one of these forms...
@@ -30,10 +29,12 @@ def handle_date_input(date_arg: str, today: date) -> date:
         raise ValueError("given date isn't a valid format!") from ve
     return date(*parts)
 
+
 def next_friday(today: date) -> date:
     """Calculates the date of the next Friday."""
     days_until_friday = (4 - today.weekday()) % 7  # 0=Mon, 1=Tue, ..., 6=Sun, 4=Fri
     return today + timedelta(days=days_until_friday)
+
 
 def weekdays_between(start_date: date, end_date: date) -> int:
     """
@@ -44,12 +45,13 @@ def weekdays_between(start_date: date, end_date: date) -> int:
     num_sundays =  ceil((startnum+1+delta)/7) - ceil((startnum+1)/7)  # add 1 to make Sundays=6 -> 7
     return delta - num_saturdays - num_sundays
 
+
 def run_short_put(args):
     """
     Calculates and prints the returns for a short put option.
     """
     expiry_date = args.expiry if args.expiry else next_friday(args.open)
- 
+
     if expiry_date < args.open:
         print("Error: Expiry date cannot be before the open date!")
         return
@@ -91,7 +93,6 @@ def run_covered_call(args):
     print(f"    Annualized: {((low_mult) ** (260.0 / weekdays)) - 1.0:>14.2%}")
 
 
-
 def main():
     """
     Main function to parse command line arguments and run the appropriate option calculation.
@@ -130,7 +131,6 @@ def main():
     else:
         parser.print_help() # If no command
 
+
 if __name__ == "__main__":
     main()
-
-
