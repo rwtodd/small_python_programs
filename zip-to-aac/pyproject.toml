@@ -1,0 +1,15 @@
+[project]
+name = "zip-to-aac"
+version = "0.1.0"
+description = "Convert audio files in ZIP archives to AAC using ffmpeg"
+readme = "README.md"
+requires-python = ">=3.14.5"
+license = { text = "MIT" }
+dependencies = []
+
+[project.scripts]
+zip-to-aac = "zip_to_aac:main"
+
+[tool.uv]
+package = true
+
