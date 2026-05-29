@@ -1,5 +1,9 @@
 # Any 2 ALAC
 
+**note** this is pretty-much superceded by the zip-to-aac tool, also in this repository.
+
+## old info
+
 This is a utility I use for taking my mostly-flac library and converting it to an ALAC file with
 soundcheck data, suitable to importing into Apple Music and converting down to 256kbit AAC.
 
