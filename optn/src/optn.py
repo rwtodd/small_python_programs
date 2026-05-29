@@ -36,14 +36,14 @@ def next_friday(today: date) -> date:
     return today + timedelta(days=days_until_friday)
 
 
-def weekdays_between(start_date: date, end_date: date) -> int:
-    """
-    Calculates the number of weekdays between two dates (inclusive).
-    """
-    startnum, delta = start_date.weekday(), (end_date - start_date).days + 1
-    num_saturdays = ceil((startnum+2+delta)/7) - ceil((startnum+2)/7)  # add 2 to make Saturday=5 -> 7
-    num_sundays =  ceil((startnum+1+delta)/7) - ceil((startnum+1)/7)  # add 1 to make Sundays=6 -> 7
-    return delta - num_saturdays - num_sundays
+# def weekdays_between(start_date: date, end_date: date) -> int:
+#     """
+#     Calculates the number of weekdays between two dates (inclusive).
+#     """
+#     startnum, delta = start_date.weekday(), (end_date - start_date).days + 1
+#     num_saturdays = ceil((startnum+2+delta)/7) - ceil((startnum+2)/7)  # add 2 to make Saturday=5 -> 7
+#     num_sundays =  ceil((startnum+1+delta)/7) - ceil((startnum+1)/7)  # add 1 to make Sundays=6 -> 7
+#     return delta - num_saturdays - num_sundays
 
 
 def run_short_put(args):
@@ -52,17 +52,20 @@ def run_short_put(args):
     """
     expiry_date = args.expiry if args.expiry else next_friday(args.open)
 
-    if expiry_date < args.open:
+    dim,yeardays = (expiry_date - args.open).days, 365.0
+    if dim < 0:
         print("Error: Expiry date cannot be before the open date!")
         return
-    weekdays = weekdays_between(args.open, expiry_date)
+    elif dim == 0:
+        print("NOTE: 0DTE calculates based on 260 0DTE days.")
+        dim,yeardays = 1,260.0
     multiplier = (args.premium - 0.005) / args.strike + 1.0
 
-    print(f"Days in Market: {weekdays:>13.2f}")
+    print(f"Days in Market: {dim:>13.2f}")
     print(f"Capital:       ${args.strike * 100.0:>13.2f}")
     print(f"Max Value:     ${args.premium * 100.0 - 0.5:>13.2f}")
     print(f"Pct Gain:       {multiplier - 1.0:>14.2%}")
-    print(f"Pct Annualized: {((multiplier) ** (260.0 / weekdays)) - 1.0:>14.2%}")
+    print(f"Pct Annualized: {((multiplier) ** (yeardays / dim)) - 1.0:>14.2%}")
     print(f"Break Even:    ${args.strike - args.premium:>13.2f}")
 
 
@@ -73,24 +76,27 @@ def run_covered_call(args):
     expiry_date = args.expiry if args.expiry else next_friday(args.open)
     basis = args.basis if args.basis else args.strike
 
-    if expiry_date < args.open:
+    dim,yeardays = (expiry_date - args.open).days, 365.0
+    if dim < 0:
         print("Error: Expiry date cannot be before the open date!")
         return
+    elif dim == 0:
+        print("NOTE: 0DTE calculates based on 260 0DTE days.")
+        dim,yeardays = 1,260.0
 
-    weekdays = weekdays_between(args.open, expiry_date)
     max_gain = (args.strike - basis) + (args.premium - 0.005)
     multiplier = 1.0 + (max_gain / basis)
     low_gain = args.premium - 0.005
     low_mult = 1.0 + (low_gain / basis)
 
-    print(f"Days in Market: {weekdays:>13.2f}")
+    print(f"Days in Market: {dim:>13.2f}")
     print(f"Capital:       ${basis * 100.0:>13.2f}")
     print(f"Max Value:     ${max_gain * 100.0:>13.2f}")
     print(f"Pct Max Gain:   {multiplier - 1.0:>14.2%}")
-    print(f"    Annualized: {((multiplier) ** (260.0 / weekdays)) - 1.0:>14.2%}")
+    print(f"    Annualized: {((multiplier) ** (yeardays / dim)) - 1.0:>14.2%}")
     print(f"Low Value:     ${low_gain * 100.0:>13.2f}")
     print(f"Pct Low Gain:   {low_mult - 1.0:>14.2%}")
-    print(f"    Annualized: {((low_mult) ** (260.0 / weekdays)) - 1.0:>14.2%}")
+    print(f"    Annualized: {((low_mult) ** (yeardays / dim)) - 1.0:>14.2%}")
 
 
 def main():

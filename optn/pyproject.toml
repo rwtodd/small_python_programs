@@ -1,6 +1,6 @@
 [project]
 name = "optn"
-version = "0.1.0"
+version = "0.2.0"
 description = "Calculate option returns for short puts and covered calls"
 readme = "README.md"
 license = { text = "MIT" }
