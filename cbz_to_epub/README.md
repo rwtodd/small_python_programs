@@ -41,8 +41,37 @@ cbz-to-epub --series "G.I. Joe" --inum 42 --iyear 1985 my-comic.cbz
 
 The tool leaves a `temp_out/` directory with the extracted images for inspection (clean it manually or via your own scripts).
 
+## Custom Table of Contents
+
+By default the generated EPUB contains two TOC entries: "Cover" (page 1) and "Last Page".
+
+You can supply a custom nested TOC using `--toc` (or `-t`):
+
+```bash
+cbz-to-epub --toc my-toc.json my-comic.cbz
+```
+
+When `--toc` is provided, the two automatic entries are **not** added.
+
+### TOC File Format (JSON)
+
+```json
+[
+  { "title": "Chapter 1: The Beginning", "page": 1, "level": 1 },
+  { "title": "The Village", "page": 3, "level": 2 },
+  { "title": "Chapter 2: The Road", "page": 12, "level": 1 },
+  { "title": "Epilogue", "page": 47, "level": 1 }
+]
+```
+
+- `title`: Chapter/section heading (required)
+- `page`: 1-based page number in the final book (required)
+- `level`: Nesting level 1–3 (optional, defaults to 1)
+
+The same format is also shown at the bottom of `cbz-to-epub --help`.
+
 ## Notes
 
 - Only JPEG/PNG/WEBP images inside the archive are processed (other files ignored).
 - The first image (lexical sort after extraction) is registered as the cover.
-- Pages and the TOC are sorted by the final optimized filename.
+- Internal files are always named `page-001.*`, `page-002.*`, etc. (zero-padded based on total page count) in the order the original filenames sorted. This makes the EPUB contents predictable and easy to inspect.

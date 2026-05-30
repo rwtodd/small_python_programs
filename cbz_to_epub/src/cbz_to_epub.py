@@ -3,13 +3,16 @@
 
 Extracts images (jpg/jpeg/png/webp), optionally converts to WEBP when smaller,
 and builds a clean EPUB using rwt_epub.EpubWriter (one full-page image per spread).
+
+Optional --toc can supply a custom nested Table of Contents (JSON) using 1-based page numbers.
+When a TOC file is provided, the automatic "Cover" and "Last Page" entries are suppressed.
 """
 
 import concurrent.futures
 import os
 import sys
 import subprocess
-import re
+import textwrap
 from pathlib import Path
 from typing import Any
 import argparse
@@ -23,7 +26,7 @@ SVN7_PATH = r'C:\Program Files\7-Zip\7z.exe' if os.name == 'nt' else '7zz'
 def process_image(img_path: Path) -> tuple[str, tuple[int, int], bytes]:
     """
     For a source image (jpg/jpeg/png/webp), optionally convert to WEBP (when
-    smaller), and return the best (filename, dims, data) tuple.
+    smaller), and return the best (extension, dims, data) tuple.
 
     - .webp inputs are passed through unchanged (no pointless re-encode).
     - jpg/jpeg/png inputs are converted to WEBP in memory; the smaller of the
@@ -31,13 +34,15 @@ def process_image(img_path: Path) -> tuple[str, tuple[int, int], bytes]:
     - Original extension is preserved for non-webp "keep original" cases
       (jpeg normalized to .jpg for consistency with prior behavior).
 
+    The caller is responsible for assigning the final base name (we now use
+    deterministic page-NNN names regardless of the original filename).
+
     Args:
         img_path: Path to the input image in the temp extraction dir.
 
     Returns:
-        (chosen_filename, (w, h), data_bytes)
+        (ext_with_dot, (w, h), data_bytes)   e.g. (".webp", (800, 1200), b'...')
     """
-    stem = img_path.stem
     suffix = img_path.suffix.lower()
     orig_ext = suffix.lstrip(".")
     if orig_ext == "jpeg":
@@ -58,7 +63,7 @@ def process_image(img_path: Path) -> tuple[str, tuple[int, int], bytes]:
 
         if is_already_webp:
             # Fast path: keep as-is, never re-encode
-            return f"{stem}.webp", (w, h), data
+            return ".webp", (w, h), data
 
         # Non-webp source: try WEBP conversion and keep whichever is smaller
         result = subprocess.run(
@@ -70,33 +75,42 @@ def process_image(img_path: Path) -> tuple[str, tuple[int, int], bytes]:
         webp_data = result.stdout
 
         if len(webp_data) > 0 and len(webp_data) < len(data):
-            return f"{stem}.webp", (w, h), webp_data
+            return ".webp", (w, h), webp_data
         else:
-            return f"{stem}.{orig_ext}", (w, h), data
+            return f".{orig_ext}", (w, h), data
 
     except subprocess.CalledProcessError as e:
         print(
             f"⚠️  Could not process '{img_path.name}'. Using original. Reason: {e.stderr.decode().strip()}",
             file=sys.stderr,
         )
-        return f"{stem}.{orig_ext or 'jpg'}", (0, 0), data
+        return f".{orig_ext or 'jpg'}", (0, 0), data
 
 def create_optimized_zip(
     source_archive: Path,
-    metadata: dict[str,Any],
-    output_file: Path
+    metadata: dict[str, Any],
+    output_file: Path,
+    toc_path: Path | None = None,
+    language: str = "en",
 ) -> None:
     """
     Finds all images (jpg/jpeg/png/webp) in the extracted archive, processes
     them (WEBP passthrough or size-comparison conversion for others), and
     builds the EPUB via EpubWriter (one image per page using SVG wrappers).
 
+    Images and XHTML pages are given clean deterministic names of the form
+    page-001.webp / page-001.xhtml (zero-padded, based on position after
+    sorting the original filenames).
+
     Args:
         source_archive: The .cbz or .cbr file.
         metadata: dict with 'title', 'author', 'year'
         output_file: desired .epub path.
+        toc_path: Optional path to a JSON TOC file. When provided, custom
+                  TOC entries are used and the automatic Cover/Last-Page
+                  entries are suppressed.
+        language: Language code for <dc:language> in the EPUB (defaults to "en").
     """
-    nonalph = re.compile(r'[^a-zA-Z0-9.]')
     # 1. expand the comic archive (flat extract)
     src_path = Path(TEMP_OUT)
     try:
@@ -118,47 +132,47 @@ def create_optimized_zip(
     if not images:
         print(f"🤷 No supported images (.jpg/.jpeg/.png/.webp) found in '{src_path}'.", file=sys.stderr)
         return
-    images.sort()  # first lexical becomes the cover candidate (same as before)
+    images.sort()  # this defines the canonical reading order + cover
     cover_img_file = images[0]
 
+    total = len(images)
+    width = max(3, len(str(total)))  # e.g. page-001, or page-0001 for very large books
     max_processes = os.cpu_count() or 4
-    print(f"⚙️  Found {len(images)} images. Starting processing with up to {max_processes} parallel workers.")
+    print(f"⚙️  Found {total} images. Starting processing with up to {max_processes} parallel workers.")
 
-    # 3. Process in parallel, add images + xhtml pages, then TOC links
+    # 3. Process (preserving sorted order), assign clean page-NNN names, write EPUB
     try:
-        seen = set()
-        with EpubWriter(str(output_file), metadata['title'], metadata['author'], metadata['year']) as ew:
+        with EpubWriter(str(output_file), metadata['title'], metadata['author'], metadata['year'], language=language) as ew:
             image_files: list[str] = []
+
             with concurrent.futures.ThreadPoolExecutor(max_workers=max_processes) as executor:
-                future_to_path = {
-                    executor.submit(process_image, p): p for p in images
-                }
-                for future in concurrent.futures.as_completed(future_to_path):
-                    original_path = future_to_path[future]
-                    try:
-                        filename, dims, data = future.result()
-                        if filename in seen:
-                            print('We have ', filename, ' already!', file=sys.stderr)
-                        elif filename.startswith('zzz'):
-                            print('Skipping', filename, file=sys.stderr)
-                        else:
-                            seen.add(filename)
-                            allalpha = nonalph.sub('', filename)
-                            print('Add image content:', allalpha)
-                            ew.add_image_content(allalpha, data, original_path == cover_img_file, dims)
-                            image_files.append(allalpha)
-                    except Exception as exc:
-                        print(f"❌ Failed to process '{original_path.name}': {exc}", file=sys.stderr)
+                # executor.map preserves the order of the input (images list)
+                for idx, (ext, dims, data) in enumerate(executor.map(process_image, images)):
+                    page_name = f"page-{idx+1:0{width}d}{ext}"
+                    is_cover = (images[idx] == cover_img_file)
+                    print(f"Add image content: {page_name}")
+                    ew.add_image_content(page_name, data, is_cover, dims)
+                    image_files.append(page_name)
 
-            # write xhtml pages (sorted for deterministic spine order)
-            image_files.sort()
+            # Write xhtml pages in the same order (already correct, no extra sort needed)
             for ifile in image_files:
-                print('Add fullpage pic:', ifile)
-                ew.add_fullpage_pic(str(Path(ifile).with_suffix('.xhtml')), ifile)
+                xhtml_name = str(Path(ifile).with_suffix(".xhtml"))
+                print(f"Add fullpage pic: {xhtml_name}")
+                ew.add_fullpage_pic(xhtml_name, ifile)
 
-            # TOC entries (new API: text first, then target filename)
-            ew.add_toc_entry('Cover', str(Path(image_files[0]).with_suffix('.xhtml')))
-            ew.add_toc_entry('Last Page', str(Path(image_files[-1]).with_suffix('.xhtml')))
+            # TOC handling: custom file (if provided) or historical defaults.
+            # We use integer page numbers (1-based spine positions) for both paths.
+            num_pages = len(image_files)
+            toc = load_toc_file(toc_path, num_pages) if toc_path else None
+
+            if toc:
+                for entry in toc:
+                    print(f'Add TOC entry (p.{entry["page"]}, level {entry["level"]}): {entry["title"]}')
+                    ew.add_toc_entry(entry["title"], entry["page"], level=entry["level"])
+            else:
+                # Historical default behavior (now using integer targets for consistency)
+                ew.add_toc_entry("Cover", 1)
+                ew.add_toc_entry("Last Page", num_pages)
             print('Done with epub file')
         print(f"\n🎉 Success! Created optimized archive at: {output_file}")
 
@@ -176,16 +190,106 @@ def prepare_out_dir(odir: Path) -> None:
     else:
         odir.mkdir()
 
+
+def load_toc_file(path: Path, num_pages: int) -> list[dict]:
+    """Load and validate a custom TOC JSON file.
+
+    Returns a list suitable for direct use with add_toc_entry using integer targets.
+    Exits with a clear error message on any validation failure.
+    """
+    import json
+
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        print(f"❌ TOC file not found: {path}", file=sys.stderr)
+        sys.exit(1)
+    except json.JSONDecodeError as e:
+        print(f"❌ Invalid JSON in TOC file {path}: {e}", file=sys.stderr)
+        sys.exit(1)
+
+    if not isinstance(data, list):
+        print("❌ TOC file must contain a JSON array of entries", file=sys.stderr)
+        sys.exit(1)
+
+    toc: list[dict] = []
+    for i, entry in enumerate(data, 1):
+        if not isinstance(entry, dict):
+            print(f"❌ TOC entry #{i} must be an object", file=sys.stderr)
+            sys.exit(1)
+        if "title" not in entry or "page" not in entry:
+            print(f"❌ TOC entry #{i} must have 'title' and 'page' keys", file=sys.stderr)
+            sys.exit(1)
+
+        title = entry["title"]
+        page = entry["page"]
+        level = entry.get("level", 1)
+
+        if not isinstance(title, str) or not title.strip():
+            print(f"❌ TOC entry #{i}: 'title' must be a non-empty string", file=sys.stderr)
+            sys.exit(1)
+        if not isinstance(page, int) or page < 1:
+            print(f"❌ TOC entry #{i}: 'page' must be an integer >= 1", file=sys.stderr)
+            sys.exit(1)
+        if page > num_pages:
+            print(
+                f"❌ TOC entry #{i}: page {page} is out of range (book has only {num_pages} pages)",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+        if not isinstance(level, int) or not (1 <= level <= 3):
+            print(f"❌ TOC entry #{i}: 'level' must be 1, 2, or 3", file=sys.stderr)
+            sys.exit(1)
+
+        toc.append({"title": title.strip(), "page": page, "level": level})
+
+    # Validate level monotonicity (no jumps > +1) — matches rwt_epub library rules
+    prev_level = 0
+    for i, e in enumerate(toc, 1):
+        if e["level"] > prev_level + 1:
+            print(
+                f"❌ TOC entry #{i}: level jumped from {prev_level} to {e['level']} (max jump is +1)",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+        prev_level = e["level"]
+
+    return toc
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(
         prog="cbz-to-epub",
         description="Convert a .cbz/.cbr file to .epub (images optimized to WEBP when beneficial)",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     parser.add_argument("comic", type=Path, help="The comic archive to convert")
     parser.add_argument("--series", default="G.I. Joe", help="The name of comic series")
     parser.add_argument("--publisher", default="Marvel", help="The publisher of the comic")
     parser.add_argument("--inum", type=int, default=-1, help="The issue number")
     parser.add_argument("--iyear", type=int, default=-1, help="The issue year of publication")
+    parser.add_argument("--language", "-l", default="en",
+                        help="Language code for the EPUB metadata (e.g. 'ja' or 'ja-JP' for Japanese comics)")
+    parser.add_argument(
+        "--toc",
+        "-t",
+        type=Path,
+        default=None,
+        help="Optional JSON file describing a custom nested TOC (suppresses the default Cover/Last-Page entries)",
+    )
+    parser.epilog = textwrap.dedent("""
+        TOC file format (JSON):
+
+          [
+            {"title": "Chapter 1", "page": 1, "level": 1},
+            {"title": "Section A", "page": 4, "level": 2},
+            {"title": "Chapter 2", "page": 12}
+          ]
+
+        "page" is 1-based. "level" is 1-3 (default 1). When --toc is given, the automatic
+        "Cover" and "Last Page" entries are not added.
+    """).strip()
+
     args = parser.parse_args()
 
     odir = Path("temp_out")
@@ -196,7 +300,7 @@ def main() -> None:
         print("outfile already exists!", file=sys.stderr)
     else:
         metadata = {"title": title, "year": args.iyear, "author": args.publisher}
-        create_optimized_zip(args.comic, metadata, result_epub)
+        create_optimized_zip(args.comic, metadata, result_epub, toc_path=args.toc, language=args.language)
 
 
 if __name__ == "__main__":
