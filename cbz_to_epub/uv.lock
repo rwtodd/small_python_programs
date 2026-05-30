@@ -1,0 +1,19 @@
+version = 1
+revision = 3
+requires-python = ">=3.13"
+
+[[package]]
+name = "cbz-to-epub"
+version = "0.1.0"
+source = { editable = "." }
+dependencies = [
+    { name = "rwt-epub" },
+]
+
+[package.metadata]
+requires-dist = [{ name = "rwt-epub", directory = "../../small_python_packages/epub" }]
+
+[[package]]
+name = "rwt-epub"
+version = "2.0.0"
+source = { directory = "../../small_python_packages/epub" }

@@ -1,0 +1,20 @@
+[project]
+name = "cbz-to-epub"
+version = "0.1.0"
+description = "Convert CBZ/CBR comic archives to EPUB, optimizing images to WEBP when smaller"
+readme = "README.md"
+license = { text = "MIT" }
+authors = [
+    { name = "Richard Todd", email = "rwtodd@users.noreply.github.com" }
+]
+requires-python = ">=3.13"
+dependencies = ["rwt-epub"]
+
+[project.scripts]
+cbz-to-epub = "cbz_to_epub:main"
+
+[tool.uv.sources]
+rwt-epub = { path = "../../small_python_packages/epub" }
+
+[tool.uv]
+package = true
