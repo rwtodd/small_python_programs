@@ -1,6 +1,6 @@
 [project]
 name = "cbz-to-epub"
-version = "0.5.1"
+version = "0.5.2"
 description = "Convert CBZ/CBR comic archives to EPUB, optimizing images to WEBP when smaller"
 readme = "README.md"
 license = { text = "MIT" }

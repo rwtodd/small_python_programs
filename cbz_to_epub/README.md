@@ -74,5 +74,6 @@ The same format is also shown at the bottom of `cbz-to-epub --help`.
 ## Notes
 
 - Only JPEG/PNG/WEBP images inside the archive are processed (other files ignored).
-- The first image (lexical sort after extraction) is registered as the cover.
-- Internal files are always named `page-001.*`, `page-002.*`, etc. (zero-padded based on total page count) in the order the original filenames sorted. This makes the EPUB contents predictable and easy to inspect.
+- Reading order: pure numeric basenames (`1.jpg`, `10.jpg`, …) are sorted numerically (as most comic readers do); otherwise filenames use natural alphanumeric order so embedded numbers still sort correctly (`page2` before `page10`).
+- The first image after that sort is registered as the cover.
+- Internal files are always named `page-001.*`, `page-002.*`, etc. (zero-padded based on total page count) in that reading order. This makes the EPUB contents predictable and easy to inspect.

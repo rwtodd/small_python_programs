@@ -10,6 +10,7 @@ When a TOC file is provided, the automatic "Cover" and "Last Page" entries are s
 
 import concurrent.futures
 import os
+import re
 import sys
 import subprocess
 import textwrap
@@ -31,7 +32,66 @@ def parse_inum(value: str) -> str:
     except ValueError:
         return value
 
-def process_image(img_path: Path) -> tuple[str, tuple[int, int], bytes]:
+
+def _numeric_stem(path: Path) -> int | None:
+    """Return the integer page number if the filename stem is purely numeric.
+
+    Accepts plain names (``1``, ``001``, ``42``) and AppleDouble resource-fork
+    sidecars produced by flat extracts (``._1``, ``._001``). Returns None for
+    any other stem.
+    """
+    stem = path.stem
+    if stem.startswith("._"):
+        stem = stem[2:]
+    if stem.isdigit():
+        return int(stem)
+    return None
+
+
+def images_use_numeric_names(images: list[Path]) -> bool:
+    """True when every image looks like a pure numeric page name.
+
+    Many CBZ/CBR archives name pages ``0.jpg``, ``1.jpg``, … ``10.jpg`` with
+    no zero-padding and expect readers to order them numerically (not
+    lexicographically). Detection ignores AppleDouble ``._N`` sidecars so a
+    flat 7-Zip extract still counts as numeric when the real pages are.
+    """
+    if not images:
+        return False
+    return all(_numeric_stem(p) is not None for p in images)
+
+
+def natural_sort_key(path: Path) -> list:
+    """Natural (alphanumeric) sort key: digit runs compared as integers.
+
+    Used when names are not purely numeric but still embed page numbers
+    (e.g. ``page-2.jpg`` vs ``page-10.jpg``).
+    """
+    parts = re.split(r"(\d+)", path.name)
+    key: list = []
+    for part in parts:
+        if part.isdigit():
+            key.append(int(part))
+        else:
+            key.append(part.casefold())
+    return key
+
+
+def sort_images(images: list[Path]) -> None:
+    """Sort image paths into reading order, in place.
+
+    - Pure numeric basenames (``1.jpg``, ``10.jpg``, optional ``._N`` junk):
+      integer order, matching common comic-reader conventions.
+    - Otherwise: natural alphanumeric order so embedded numbers still sort
+      correctly (``page2`` before ``page10``).
+    """
+    if images_use_numeric_names(images):
+        # All stems are numeric after detection; 0 is only a type-narrowing fallback.
+        images.sort(key=lambda p: _numeric_stem(p) or 0)
+    else:
+        images.sort(key=natural_sort_key)
+
+def process_image(img_path: Path) -> tuple[str, tuple[int, int], bytes] | None:
     """
     For a source image (jpg/jpeg/png/webp), optionally convert to WEBP (when
     smaller), and return the best (extension, dims, data) tuple.
@@ -41,6 +101,8 @@ def process_image(img_path: Path) -> tuple[str, tuple[int, int], bytes]:
       two versions is kept (webp wins only when strictly smaller).
     - Original extension is preserved for non-webp "keep original" cases
       (jpeg normalized to .jpg for consistency with prior behavior).
+    - If ImageMagick cannot identify the file (corrupt / not a real image),
+      log a warning and return None so the caller skips it entirely.
 
     The caller is responsible for assigning the final base name (we now use
     deterministic page-NNN names regardless of the original filename).
@@ -49,7 +111,8 @@ def process_image(img_path: Path) -> tuple[str, tuple[int, int], bytes]:
         img_path: Path to the input image in the temp extraction dir.
 
     Returns:
-        (ext_with_dot, (w, h), data_bytes)   e.g. (".webp", (800, 1200), b'...')
+        (ext_with_dot, (w, h), data_bytes) on success, e.g.
+        (".webp", (800, 1200), b'...'), or None if the file should be skipped.
     """
     suffix = img_path.suffix.lower()
     orig_ext = suffix.lstrip(".")
@@ -58,9 +121,9 @@ def process_image(img_path: Path) -> tuple[str, tuple[int, int], bytes]:
     data = img_path.read_bytes()
     is_already_webp = (suffix == ".webp")
 
+    # Identify dimensions first — failure means the file is not a usable image.
+    fmt_hint = orig_ext if not is_already_webp else "webp"
     try:
-        # Identify dimensions (magick understands the format hint)
-        fmt_hint = orig_ext if not is_already_webp else "webp"
         result = subprocess.run(
             ["magick", "identify", "-format", "%w %h", f"{fmt_hint}:-"],
             input=data,
@@ -68,12 +131,19 @@ def process_image(img_path: Path) -> tuple[str, tuple[int, int], bytes]:
             check=True,
         )
         w, h = [int(x) for x in result.stdout.split()]
+    except subprocess.CalledProcessError as e:
+        print(
+            f"⚠️  Could not identify '{img_path.name}'. Skipping. Reason: {e.stderr.decode().strip()}",
+            file=sys.stderr,
+        )
+        return None
 
-        if is_already_webp:
-            # Fast path: keep as-is, never re-encode
-            return ".webp", (w, h), data
+    if is_already_webp:
+        # Fast path: keep as-is, never re-encode
+        return ".webp", (w, h), data
 
-        # Non-webp source: try WEBP conversion and keep whichever is smaller
+    # Non-webp source: try WEBP conversion and keep whichever is smaller
+    try:
         result = subprocess.run(
             ["magick", "convert", "-quality", WEBP_QUALITY, f"{orig_ext}:-", "webp:-"],
             input=data,
@@ -89,10 +159,10 @@ def process_image(img_path: Path) -> tuple[str, tuple[int, int], bytes]:
 
     except subprocess.CalledProcessError as e:
         print(
-            f"⚠️  Could not process '{img_path.name}'. Using original. Reason: {e.stderr.decode().strip()}",
+            f"⚠️  Could not convert '{img_path.name}' to WEBP. Using original. Reason: {e.stderr.decode().strip()}",
             file=sys.stderr,
         )
-        return f".{orig_ext or 'jpg'}", (0, 0), data
+        return f".{orig_ext or 'jpg'}", (w, h), data
 
 def create_optimized_zip(
     source_archive: Path,
@@ -140,27 +210,39 @@ def create_optimized_zip(
     if not images:
         print(f"🤷 No supported images (.jpg/.jpeg/.png/.webp) found in '{src_path}'.", file=sys.stderr)
         return
-    images.sort()  # this defines the canonical reading order + cover
-    cover_img_file = images[0]
-
+    sort_images(images)  # numeric or natural order → canonical reading order
     total = len(images)
     width = max(3, len(str(total)))  # e.g. page-001, or page-0001 for very large books
     max_processes = os.cpu_count() or 4
     print(f"⚙️  Found {total} images. Starting processing with up to {max_processes} parallel workers.")
 
-    # 3. Process (preserving sorted order), assign clean page-NNN names, write EPUB
+    # 3. Process images (preserving sorted order). Identify failures return None
+    #    and are skipped entirely — treated as if the file was never present.
     try:
+        with concurrent.futures.ThreadPoolExecutor(max_workers=max_processes) as executor:
+            # executor.map preserves the order of the input (images list)
+            processed = list(executor.map(process_image, images))
+
+        pages: list[tuple[str, tuple[int, int], bytes]] = []
+        for result in processed:
+            if result is None:
+                continue
+            pages.append(result)
+
+        if not pages:
+            print("❌ No usable images after processing (all failed identify).", file=sys.stderr)
+            return
+
+        # 4. Assign clean page-NNN names and write EPUB
         with EpubWriter(str(output_file), metadata['title'], metadata['author'], metadata['year'], language=language) as ew:
             image_files: list[str] = []
 
-            with concurrent.futures.ThreadPoolExecutor(max_workers=max_processes) as executor:
-                # executor.map preserves the order of the input (images list)
-                for idx, (ext, dims, data) in enumerate(executor.map(process_image, images)):
-                    page_name = f"page-{idx+1:0{width}d}{ext}"
-                    is_cover = (images[idx] == cover_img_file)
-                    print(f"Add image content: {page_name}")
-                    ew.add_image_content(page_name, data, is_cover, dims)
-                    image_files.append(page_name)
+            for page_num, (ext, dims, data) in enumerate(pages, start=1):
+                page_name = f"page-{page_num:0{width}d}{ext}"
+                is_cover = (page_num == 1)  # first successfully processed image
+                print(f"Add image content: {page_name}")
+                ew.add_image_content(page_name, data, is_cover, dims)
+                image_files.append(page_name)
 
             # Write xhtml pages in the same order (already correct, no extra sort needed)
             for ifile in image_files:
