@@ -23,6 +23,14 @@ WEBP_QUALITY = '80%'
 TEMP_OUT = 'temp_out'
 SVN7_PATH = r'C:\Program Files\7-Zip\7z.exe' if os.name == 'nt' else '7zz'
 
+
+def parse_inum(value: str) -> str:
+    """Parse --inum: integers are zero-padded to 3 digits; other strings pass through as-is."""
+    try:
+        return f"{int(value):03d}"
+    except ValueError:
+        return value
+
 def process_image(img_path: Path) -> tuple[str, tuple[int, int], bytes]:
     """
     For a source image (jpg/jpeg/png/webp), optionally convert to WEBP (when
@@ -266,7 +274,13 @@ def main() -> None:
     parser.add_argument("comic", type=Path, help="The comic archive to convert")
     parser.add_argument("--series", default="G.I. Joe", help="The name of comic series")
     parser.add_argument("--publisher", default="Marvel", help="The publisher of the comic")
-    parser.add_argument("--inum", type=int, default=-1, help="The issue number")
+    parser.add_argument(
+        "--inum",
+        type=parse_inum,
+        default=None,
+        help="Issue number: an integer (zero-padded to 3 digits) or any string used as-is. "
+             "If omitted, the title is just the series name.",
+    )
     parser.add_argument("--iyear", type=int, default=-1, help="The issue year of publication")
     parser.add_argument("--language", "-l", default="en",
                         help="Language code for the EPUB metadata (e.g. 'ja' or 'ja-JP' for Japanese comics)")
@@ -294,7 +308,7 @@ def main() -> None:
 
     odir = Path("temp_out")
     prepare_out_dir(odir)
-    title = f"{args.series} {args.inum:03d}"
+    title = f"{args.series} {args.inum}" if args.inum is not None else args.series
     result_epub = Path(f"{title}.epub")
     if result_epub.exists():
         print("outfile already exists!", file=sys.stderr)

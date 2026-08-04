@@ -37,7 +37,8 @@ cbz-to-epub --series "G.I. Joe" --inum 42 --iyear 1985 my-comic.cbz
 
 - Output: `G.I. Joe 042.epub` in the current directory
 - `--series` and `--publisher` (author) default to classic Marvel/G.I. Joe values
-- `--inum` / `--iyear` default to `-1` (produces titles like `Series -01.epub`)
+- `--inum` accepts an integer (zero-padded to 3 digits, e.g. `42` → `042`) or any string used as-is (e.g. `--inum "Annual 1"`). If omitted, the title is just the series name (no trailing space).
+- `--iyear` defaults to `-1`
 
 The tool leaves a `temp_out/` directory with the extracted images for inspection (clean it manually or via your own scripts).
 
